@@ -1,0 +1,150 @@
+# The integrity comparison must notice a file that changed between snapshots,
+# treat two ABSENT snapshots of the same path as a legitimate no-change, and
+# must NOT report PASS for a path it could never actually checksum -- an
+# unreadable file must surface as UNKNOWN, not silently compare ABSENT==ABSENT.
+
+- name: Integrity guard detects modification
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks:
+    # All three plays below target the same host (localhost) in one
+    # ansible-playbook run, and set_fact values persist across plays for a
+    # given host (meta: clear_facts does NOT clear them -- verified
+    # empirically; it only clears gathered ansible_facts). Without an
+    # explicit reset, _wi_modified/_wi_unreadable/_wi_before_map/_wi_after_map
+    # from an earlier play would leak into the next play's comparison. Reset
+    # to their empty-container form rather than truly unsetting them: every
+    # consumer already does `| default([])` / `| default({})`, so empty and
+    # undefined behave identically here, and ansible-core 2.11.5's Jinja has
+    # no `undef()` function to force true undefined.
+    - name: Resetting the guard's internal state between test plays
+      set_fact:
+        _wi_before_map: {}
+        _wi_after_map: {}
+        _wi_modified: []
+        _wi_unreadable: []
+
+    # integrity_after.yml appends to whatif_results (Task 1's interface); outside
+    # of main.yml's block it is never initialised, so this test seeds it the same
+    # way main.yml does before including either integrity_*.yml task file.
+    - name: Starting with an empty result set
+      set_fact:
+        whatif_results: []
+
+    - name: Creating two probe files
+      copy:
+        dest: "/tmp/wi-probe-{{ item }}.txt"
+        content: "original\n"
+      loop: [stable, mutated]
+
+    # integrity_before.yml BUILDS _wi_guarded_paths from
+    # whatif_guarded_paths + [_wi_authorized_keys], so feed it through those two
+    # variables. Setting _wi_guarded_paths directly here would be overwritten.
+    - include_tasks: ../../deploy/roles/whatif/tasks/integrity_before.yml
+      vars:
+        whatif_guarded_paths: ['/tmp/wi-probe-mutated.txt']
+        _wi_authorized_keys: /tmp/wi-probe-stable.txt
+
+    - name: Mutating exactly one of them
+      copy:
+        dest: /tmp/wi-probe-mutated.txt
+        content: "CHANGED\n"
+
+    - include_tasks: ../../deploy/roles/whatif/tasks/integrity_after.yml
+
+    - name: The guard must report FAIL and name the mutated file
+      assert:
+        that:
+          - whatif_results | selectattr('group','equalto','INTEGRITY') | selectattr('status','equalto','FAIL') | list | length == 1
+          - "'wi-probe-mutated' in (whatif_results | selectattr('group','equalto','INTEGRITY') | map(attribute='detail') | join(' '))"
+          - "'wi-probe-stable' not in (whatif_results | selectattr('group','equalto','INTEGRITY') | map(attribute='detail') | join(' '))"
+        fail_msg: "integrity guard did not detect the mutated file, or falsely flagged the stable one"
+
+- name: Integrity guard treats two ABSENT snapshots as no change
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks:
+    - name: Resetting the guard's internal state between test plays
+      set_fact:
+        _wi_before_map: {}
+        _wi_after_map: {}
+        _wi_modified: []
+        _wi_unreadable: []
+
+    - name: Starting with an empty result set
+      set_fact:
+        whatif_results: []
+
+    - name: Ensuring the probe paths do not exist on either side of the run
+      file:
+        path: "/tmp/wi-probe-{{ item }}.txt"
+        state: absent
+      loop: [absent-a, absent-b]
+
+    - include_tasks: ../../deploy/roles/whatif/tasks/integrity_before.yml
+      vars:
+        whatif_guarded_paths: ['/tmp/wi-probe-absent-a.txt']
+        _wi_authorized_keys: /tmp/wi-probe-absent-b.txt
+
+    # Nothing is created between snapshots -- both paths stay absent.
+
+    - include_tasks: ../../deploy/roles/whatif/tasks/integrity_after.yml
+
+    - name: The guard must report PASS when both snapshots read ABSENT
+      assert:
+        that:
+          - whatif_results | selectattr('group','equalto','INTEGRITY') | map(attribute='status') | list == ['PASS']
+        fail_msg: "ABSENT before and ABSENT after is a legitimate no-change and must PASS"
+
+- name: Integrity guard reports UNKNOWN, not PASS, for a file it could not checksum
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks:
+    - name: Resetting the guard's internal state between test plays
+      set_fact:
+        _wi_before_map: {}
+        _wi_after_map: {}
+        _wi_modified: []
+        _wi_unreadable: []
+
+    - name: Starting with an empty result set
+      set_fact:
+        whatif_results: []
+
+    - name: Creating a probe file and a readable sentinel
+      copy:
+        dest: "/tmp/wi-probe-{{ item }}.txt"
+        content: "original\n"
+      loop: [locked, sentinel]
+
+    # chmod 000 makes the file unreadable even to its owner (only root bypasses
+    # this), so stat still succeeds (exists: true) but returns no checksum --
+    # the exact "exists but unreadable" condition this guard must not silently
+    # read as ABSENT. This is the real code path, not a synthetic stand-in: the
+    # actual stat module hits the actual permission bits.
+    - name: Making the probe file unreadable to its own owner
+      file:
+        path: /tmp/wi-probe-locked.txt
+        mode: '0000'
+
+    - include_tasks: ../../deploy/roles/whatif/tasks/integrity_before.yml
+      vars:
+        whatif_guarded_paths: ['/tmp/wi-probe-locked.txt']
+        _wi_authorized_keys: /tmp/wi-probe-sentinel.txt
+
+    - include_tasks: ../../deploy/roles/whatif/tasks/integrity_after.yml
+
+    - name: Restoring permissions so the runner's cleanup can remove the file
+      file:
+        path: /tmp/wi-probe-locked.txt
+        mode: '0644'
+
+    - name: The guard must report UNKNOWN and name the unreadable file, not PASS
+      assert:
+        that:
+          - whatif_results | selectattr('group','equalto','INTEGRITY') | map(attribute='status') | list == ['UNKNOWN']
+          - "'wi-probe-locked' in (whatif_results | selectattr('group','equalto','INTEGRITY') | map(attribute='detail') | join(' '))"
+        fail_msg: "an unreadable guarded file must surface as UNKNOWN -- reporting PASS here means the guard verified nothing"

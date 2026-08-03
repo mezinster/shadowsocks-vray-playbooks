@@ -1,0 +1,132 @@
+# Important 2 regression: service_health.yml used to derive _wi_missing
+# solely from `_wi_docker.stdout_lines | default([])` and never consulted
+# `_wi_docker.rc`. On a host where the connecting user is not in the docker
+# group, `docker ps` exits non-zero with empty stdout -- and the old code
+# read that identically to "docker ps succeeded and listed zero containers",
+# reporting all three containers FAIL on a perfectly healthy proxy.
+#
+# This test puts a fake `docker` executable first on PATH (via the play's
+# `environment:`) so the REAL "Listing running containers" task in
+# service_health.yml actually invokes it -- this is the real code path, not
+# a synthetic stand-in for the Jinja logic. Two plays: one where the fake
+# docker exits non-zero (must report UNKNOWN, not FAIL), one where it exits
+# 0 but omits one container (the genuine case must still report FAIL).
+#
+# service_health.yml also consumes _wi_ss (registered by ssh_safety.yml,
+# which does not run in this isolated test) for the v2ray-plugin check, and
+# whatif_cert_min_days (a whatif role default, not loaded outside the role)
+# for the certificate check -- both are stubbed here so those unrelated
+# checks degrade to their own UNKNOWN/FAIL instead of crashing the include,
+# same as they would on a real host with no proxy listening.
+- name: docker ps failing (not in the docker group) must report UNKNOWN, not FAIL
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  vars:
+    host: example.com
+    endpoint: ss
+    whatif_cert_min_days: 14
+  environment:
+    PATH: "/tmp/wi-fake-docker-bin/unreachable:{{ ansible_env.PATH }}"
+  tasks:
+    - name: Creating the fake-docker directory
+      file:
+        path: /tmp/wi-fake-docker-bin/unreachable
+        state: directory
+        mode: '0755'
+
+    - name: Creating a fake docker that fails as it would outside the docker group
+      copy:
+        dest: /tmp/wi-fake-docker-bin/unreachable/docker
+        mode: '0755'
+        content: |
+          #!/bin/sh
+          echo "permission denied while trying to connect to the Docker daemon socket" >&2
+          exit 1
+
+    - name: Resetting shared state this task file depends on
+      set_fact:
+        whatif_results: []
+        # rc: 0 so the plugin-binding check's own UNKNOWN-on-broken-ss branch
+        # (see test-ss-rc.yml) is not what's exercised here -- this file is
+        # only about the docker ps rc, and an rc-less stub would now hit that
+        # other branch since service_health.yml reads _wi_ss.rc too.
+        _wi_ss:
+          stdout_lines: []
+          rc: 0
+
+    - include_tasks: ../../deploy/roles/whatif/tasks/connection.yml
+    - include_tasks: ../../deploy/roles/whatif/tasks/service_health.yml
+
+    - name: The container check must report UNKNOWN, not FAIL, when docker ps itself failed
+      assert:
+        that:
+          - _wi_container_result.status == 'UNKNOWN'
+          - "'docker group' in _wi_container_result.detail"
+        fail_msg: >-
+          expected UNKNOWN mentioning the docker group when `docker ps` exits
+          non-zero, got: {{ _wi_container_result | default('no result recorded') }}
+      vars:
+        _wi_container_result: "{{ (whatif_results | selectattr('group', 'equalto', 'PROXY') | selectattr('name', 'equalto', 'proxy containers running') | list | first) | default({}) }}"
+
+    - name: Removing the fake docker
+      file:
+        path: /tmp/wi-fake-docker-bin
+        state: absent
+
+- name: docker ps succeeding but missing a container must still report FAIL
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  vars:
+    host: example.com
+    endpoint: ss
+    whatif_cert_min_days: 14
+  environment:
+    PATH: "/tmp/wi-fake-docker-bin/reachable:{{ ansible_env.PATH }}"
+  tasks:
+    - name: Creating the fake-docker directory
+      file:
+        path: /tmp/wi-fake-docker-bin/reachable
+        state: directory
+        mode: '0755'
+
+    - name: Creating a fake docker that succeeds but omits one container
+      copy:
+        dest: /tmp/wi-fake-docker-bin/reachable/docker
+        mode: '0755'
+        content: |
+          #!/bin/sh
+          echo "nginx_container"
+          echo "shadowsocks_container"
+          exit 0
+
+    - name: Resetting shared state this task file depends on
+      set_fact:
+        whatif_results: []
+        # rc: 0 so the plugin-binding check's own UNKNOWN-on-broken-ss branch
+        # (see test-ss-rc.yml) is not what's exercised here -- this file is
+        # only about the docker ps rc, and an rc-less stub would now hit that
+        # other branch since service_health.yml reads _wi_ss.rc too.
+        _wi_ss:
+          stdout_lines: []
+          rc: 0
+
+    - include_tasks: ../../deploy/roles/whatif/tasks/connection.yml
+    - include_tasks: ../../deploy/roles/whatif/tasks/service_health.yml
+
+    - name: The container check must still report FAIL when docker really is missing a container
+      assert:
+        that:
+          - _wi_container_result.status == 'FAIL'
+          - "'certbot_container' in _wi_container_result.detail"
+        fail_msg: >-
+          expected FAIL naming certbot_container when docker ps genuinely
+          omits it, got: {{ _wi_container_result | default('no result recorded') }}
+      vars:
+        _wi_container_result: "{{ (whatif_results | selectattr('group', 'equalto', 'PROXY') | selectattr('name', 'equalto', 'proxy containers running') | list | first) | default({}) }}"
+
+    - name: Removing the fake docker
+      file:
+        path: /tmp/wi-fake-docker-bin
+        state: absent

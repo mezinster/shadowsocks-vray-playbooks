@@ -1,0 +1,215 @@
+# A malformed/empty/missing live file, or a broken template render, must
+# degrade the DRIFT check to UNKNOWN -- never crash the play (which would
+# abort main.yml before report.yml runs and silently discard every other
+# group's results) and never report PASS having verified nothing.
+#
+# Each play below seeds a sentinel result in another group BEFORE
+# include_tasks: drift.yml runs, and asserts it is still present afterwards.
+# That is the actual regression this guards: a crash inside drift.yml used
+# to take the whole report down with it.
+
+- name: Drift check survives a live config.json that is not valid JSON
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    host: yourserver.domain.net
+    endpoint: ss
+    proxy_password: yourpassword
+    method: chacha20-ietf-poly1305
+    fast_open: true
+    _wi_user: "{{ lookup('env', 'USER') }}"
+  tasks:
+    - name: Resetting state between test plays
+      set_fact:
+        whatif_results:
+          - { group: 'PROXY', status: 'PASS', name: 'sentinel result must survive a drift crash', detail: 'seeded before drift.yml runs' }
+
+    - name: Creating a fake live shadowsocks_config tree
+      file:
+        path: "/home/{{ _wi_user }}/shadowsocks_config/docker/{{ item }}"
+        state: directory
+        mode: '0755'
+      loop: [nginx, shadowsocks]
+
+    - name: Writing a normal live nginx file (only the JSON side is under test here)
+      copy:
+        dest: "/home/{{ _wi_user }}/shadowsocks_config/docker/nginx/default.conf"
+        content: "server {}\n"
+
+    - name: Writing malformed JSON as the live shadowsocks config -- the reproducer
+      copy:
+        dest: "/home/{{ _wi_user }}/shadowsocks_config/docker/shadowsocks/config.json"
+        content: "{not json"
+
+    - name: Creating the render tempdir drift.yml expects
+      tempfile:
+        state: directory
+        suffix: whatif-drift-test
+      register: _wi_tmp
+
+    - name: Running the real drift check against the malformed file
+      include_tasks: ../../deploy/roles/whatif/tasks/drift.yml
+
+    - name: Cleaning up the fake live tree and tempdir
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/home/{{ _wi_user }}/shadowsocks_config"
+        - "{{ _wi_tmp.path }}"
+
+    - name: Malformed JSON must be UNKNOWN, and the sentinel result must survive
+      assert:
+        that:
+          - (whatif_results | selectattr('name', 'equalto', 'shadowsocks-config.j2 vs live') | map(attribute='status') | list) == ['UNKNOWN']
+          - (whatif_results | selectattr('name', 'equalto', 'sentinel result must survive a drift crash') | list | length) == 1
+          - whatif_results | length == 3
+        fail_msg: "malformed live JSON must degrade to DRIFT/UNKNOWN without crashing the play or losing earlier results"
+
+- name: Drift check survives an empty live config.json
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    host: yourserver.domain.net
+    endpoint: ss
+    proxy_password: yourpassword
+    method: chacha20-ietf-poly1305
+    fast_open: true
+    _wi_user: "{{ lookup('env', 'USER') }}"
+  tasks:
+    - name: Resetting state between test plays
+      set_fact:
+        whatif_results:
+          - { group: 'PROXY', status: 'PASS', name: 'sentinel result must survive a drift crash', detail: 'seeded before drift.yml runs' }
+
+    - name: Creating a fake live shadowsocks_config tree
+      file:
+        path: "/home/{{ _wi_user }}/shadowsocks_config/docker/{{ item }}"
+        state: directory
+        mode: '0755'
+      loop: [nginx, shadowsocks]
+
+    - name: Writing a normal live nginx file
+      copy:
+        dest: "/home/{{ _wi_user }}/shadowsocks_config/docker/nginx/default.conf"
+        content: "server {}\n"
+
+    - name: Writing an empty file as the live shadowsocks config
+      copy:
+        dest: "/home/{{ _wi_user }}/shadowsocks_config/docker/shadowsocks/config.json"
+        content: ""
+
+    - name: Creating the render tempdir drift.yml expects
+      tempfile:
+        state: directory
+        suffix: whatif-drift-test
+      register: _wi_tmp
+
+    - name: Running the real drift check against the empty file
+      include_tasks: ../../deploy/roles/whatif/tasks/drift.yml
+
+    - name: Cleaning up the fake live tree and tempdir
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/home/{{ _wi_user }}/shadowsocks_config"
+        - "{{ _wi_tmp.path }}"
+
+    - name: An empty live file must be UNKNOWN, and the sentinel result must survive
+      assert:
+        that:
+          - (whatif_results | selectattr('name', 'equalto', 'shadowsocks-config.j2 vs live') | map(attribute='status') | list) == ['UNKNOWN']
+          - (whatif_results | selectattr('name', 'equalto', 'sentinel result must survive a drift crash') | list | length) == 1
+        fail_msg: "an empty live config.json must degrade to DRIFT/UNKNOWN without crashing the play"
+
+- name: Drift check still reports UNKNOWN when the live file is missing entirely
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    host: yourserver.domain.net
+    endpoint: ss
+    proxy_password: yourpassword
+    method: chacha20-ietf-poly1305
+    fast_open: true
+    _wi_user: "{{ lookup('env', 'USER') }}"
+  tasks:
+    - name: Resetting state between test plays
+      set_fact:
+        whatif_results:
+          - { group: 'PROXY', status: 'PASS', name: 'sentinel result must survive a drift crash', detail: 'seeded before drift.yml runs' }
+
+    - name: Ensuring no live shadowsocks_config tree exists at all
+      file:
+        path: "/home/{{ _wi_user }}/shadowsocks_config"
+        state: absent
+
+    - name: Creating the render tempdir drift.yml expects
+      tempfile:
+        state: directory
+        suffix: whatif-drift-test
+      register: _wi_tmp
+
+    - name: Running the real drift check with nothing deployed yet
+      include_tasks: ../../deploy/roles/whatif/tasks/drift.yml
+
+    - name: Cleaning up the tempdir
+      file:
+        path: "{{ _wi_tmp.path }}"
+        state: absent
+
+    - name: A missing live tree must be UNKNOWN for both files, and the sentinel result must survive
+      assert:
+        that:
+          - (whatif_results | selectattr('group', 'equalto', 'DRIFT') | map(attribute='status') | unique | list) == ['UNKNOWN']
+          - (whatif_results | selectattr('name', 'equalto', 'sentinel result must survive a drift crash') | list | length) == 1
+        fail_msg: "a completely missing live deployment must degrade to DRIFT/UNKNOWN, not PASS or FAIL"
+
+- name: Drift check survives a template render failure
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    # 'host' deliberately left undefined: both nginx-release.j2 and
+    # shadowsocks-config.j2 reference {{ host }}, so rendering either one
+    # raises AnsibleUndefinedVariable -- the real render-failure path, not a
+    # synthetic stand-in.
+    endpoint: ss
+    proxy_password: yourpassword
+    method: chacha20-ietf-poly1305
+    fast_open: true
+    _wi_user: "{{ lookup('env', 'USER') }}"
+  tasks:
+    - name: Resetting state between test plays
+      set_fact:
+        whatif_results:
+          - { group: 'PROXY', status: 'PASS', name: 'sentinel result must survive a drift crash', detail: 'seeded before drift.yml runs' }
+
+    - name: Ensuring no live shadowsocks_config tree exists
+      file:
+        path: "/home/{{ _wi_user }}/shadowsocks_config"
+        state: absent
+
+    - name: Creating the render tempdir drift.yml expects
+      tempfile:
+        state: directory
+        suffix: whatif-drift-test
+      register: _wi_tmp
+
+    - name: Running the real drift check with 'host' undefined so rendering breaks
+      include_tasks: ../../deploy/roles/whatif/tasks/drift.yml
+
+    - name: Cleaning up the tempdir
+      file:
+        path: "{{ _wi_tmp.path }}"
+        state: absent
+
+    - name: A broken render must be UNKNOWN, and the sentinel result must survive
+      assert:
+        that:
+          - (whatif_results | selectattr('group', 'equalto', 'DRIFT') | map(attribute='status') | unique | list) == ['UNKNOWN']
+          - (whatif_results | selectattr('name', 'equalto', 'sentinel result must survive a drift crash') | list | length) == 1
+        fail_msg: "a template render failure must degrade to DRIFT/UNKNOWN, not crash the play"

@@ -1,0 +1,36 @@
+- name: Drift normalisation
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    _live: |
+      # a hand-written comment
+      server {
+
+        listen 443 ssl;
+      }
+    _rendered: |
+      # a DIFFERENT generated comment
+      server {
+        listen 443 ssl;
+      }
+    _rendered_functional: |
+      server {
+        listen 8443 ssl;
+      }
+  tasks:
+    - name: Normalising
+      set_fact:
+        _n_live: "{{ _live | regex_replace('(?m)^\\s*#.*$', '') | regex_replace('(?m)[ \\t]+$', '') | regex_replace('\\n+', '\\n') | trim }}"
+        _n_rendered: "{{ _rendered | regex_replace('(?m)^\\s*#.*$', '') | regex_replace('(?m)[ \\t]+$', '') | regex_replace('\\n+', '\\n') | trim }}"
+        _n_functional: "{{ _rendered_functional | regex_replace('(?m)^\\s*#.*$', '') | regex_replace('(?m)[ \\t]+$', '') | regex_replace('\\n+', '\\n') | trim }}"
+
+    - name: Comment and blank-line differences must normalise away
+      assert:
+        that: _n_live == _n_rendered
+        fail_msg: "comment/whitespace difference was treated as functional"
+
+    - name: A real directive change must NOT normalise away
+      assert:
+        that: _n_live != _n_functional
+        fail_msg: "a functional difference was normalised away — the check would go permanently green"

@@ -1,0 +1,13 @@
+# Report engine: a run with no FAIL must succeed, even with UNKNOWN present.
+- name: Report engine — no failures
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    whatif_results:
+      - { group: 'LOCKOUT',   status: 'PASS',    name: 'rendered sshd config valid', detail: 'sshd -t exit 0' }
+      - { group: 'LOCKOUT',   status: 'UNKNOWN', name: 'cloud firewall allows port',  detail: 'CANNOT VERIFY' }
+      - { group: 'PROXY',     status: 'PASS',    name: 'tunnel serves traffic',       detail: 'HTTP/1.1 101' }
+      - { group: 'INTEGRITY', status: 'PASS',    name: 'no file modified',            detail: '6 checksums unchanged' }
+  tasks:
+    - include_tasks: ../../deploy/roles/whatif/tasks/report.yml

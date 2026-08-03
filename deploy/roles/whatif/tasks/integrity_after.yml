@@ -1,0 +1,62 @@
+- name: Snapshotting guarded files after all checks
+  become: yes
+  stat:
+    path: "{{ item }}"
+    get_checksum: yes
+    checksum_algorithm: sha256
+  loop: "{{ _wi_guarded_paths }}"
+  register: _wi_after
+  changed_when: false
+
+# Same three-state classification as integrity_before.yml's map: ABSENT /
+# checksum / UNREADABLE. See that file for why UNREADABLE must stay distinct
+# from ABSENT.
+- name: Reducing the after-snapshot to a path/state map
+  set_fact:
+    _wi_after_map: "{{ _wi_after_map | default({}) | combine({ item.item: _wi_state }) }}"
+  loop: "{{ _wi_after.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  vars:
+    _wi_state: "{{ (not item.stat.exists) | ternary('ABSENT', (item.stat.checksum is defined) | ternary(item.stat.checksum, 'UNREADABLE')) }}"
+
+# A path unreadable on either snapshot was never actually compared, however
+# its ABSENT/checksum state happens to line up -- that is UNKNOWN, not PASS.
+- name: Collecting any path that could not be checksummed on either snapshot
+  set_fact:
+    _wi_unreadable: "{{ _wi_unreadable | default([]) + [item] }}"
+  loop: "{{ _wi_guarded_paths }}"
+  loop_control:
+    label: "{{ item }}"
+  when: _wi_before_map[item] == 'UNREADABLE' or _wi_after_map[item] == 'UNREADABLE'
+
+- name: Collecting any path whose checksum moved
+  set_fact:
+    _wi_modified: "{{ _wi_modified | default([]) + [item] }}"
+  loop: "{{ _wi_guarded_paths }}"
+  loop_control:
+    label: "{{ item }}"
+  when: >-
+    _wi_before_map[item] != 'UNREADABLE' and _wi_after_map[item] != 'UNREADABLE'
+    and _wi_before_map[item] != _wi_after_map[item]
+
+# FAIL beats UNKNOWN beats PASS: a checksum that demonstrably moved is worse
+# news than one this preflight could not read, which is itself worse news
+# than "unchanged". UNKNOWN is what the report engine's contract wants here --
+# it prints, it does not fail the run, and it is never counted as success.
+- name: Recording the integrity result
+  set_fact:
+    whatif_results: "{{ whatif_results + [{
+        'group': 'INTEGRITY',
+        'status': _wi_status,
+        'name': 'no file modified by this preflight',
+        'detail': _wi_detail }] }}"
+  vars:
+    _wi_has_modified: "{{ (_wi_modified | default([]) | length) > 0 }}"
+    _wi_has_unreadable: "{{ (_wi_unreadable | default([]) | length) > 0 }}"
+    _wi_status: "{{ _wi_has_modified | ternary('FAIL', _wi_has_unreadable | ternary('UNKNOWN', 'PASS')) }}"
+    _wi_detail: "{{ _wi_has_modified | ternary(
+        'MODIFIED: ' ~ (_wi_modified | default([]) | join(', ')),
+        _wi_has_unreadable | ternary(
+          'UNREADABLE: ' ~ (_wi_unreadable | default([]) | join(', ')),
+          (_wi_guarded_paths | length) ~ ' checksums unchanged')) }}"

@@ -1,0 +1,26 @@
+- name: Counting results
+  set_fact:
+    _wi_pass: "{{ whatif_results | selectattr('status', 'equalto', 'PASS') | list | length }}"
+    _wi_fail: "{{ whatif_results | selectattr('status', 'equalto', 'FAIL') | list | length }}"
+    _wi_unknown: "{{ whatif_results | selectattr('status', 'equalto', 'UNKNOWN') | list | length }}"
+    _wi_lines: []
+
+- name: Building each report section
+  include_tasks: report_group.yml
+  loop: "{{ ['LOCKOUT', 'PROXY', 'DRIFT', 'INTEGRITY'] }}"
+  loop_control:
+    loop_var: group_name
+
+- name: Rendering the preflight report
+  debug:
+    msg: "{{ ['WHATIF PREFLIGHT — ' ~ inventory_hostname] + _wi_lines + ['',
+              'RESULT: ' ~ _wi_pass ~ ' PASS, ' ~ _wi_fail ~ ' FAIL, ' ~ _wi_unknown ~ ' UNKNOWN'] }}"
+
+# UNKNOWN never fails the run — it means "could not be checked", not "is broken".
+- name: Failing when any check failed
+  fail:
+    msg: >-
+      Preflight found {{ _wi_fail }} failing check(s):
+      {{ whatif_results | selectattr('status', 'equalto', 'FAIL') | map(attribute='name') | join(', ') }}.
+      Do NOT run the hardening playbook against this host until they are resolved.
+  when: _wi_fail | int > 0

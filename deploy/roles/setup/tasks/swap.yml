@@ -6,6 +6,11 @@
       command: swapon --show --noheadings
       register: _swap_show
       changed_when: false
+      # Read-only probe: safe to actually run in check mode, and running it
+      # is what makes the result real instead of the empty stdout check
+      # mode's simulated `command` always returns (which reads as "no swap"
+      # even on a host that has swap active).
+      check_mode: no
 
     - name: Creating the swap file
       when: _swap_show.stdout | trim == ""
