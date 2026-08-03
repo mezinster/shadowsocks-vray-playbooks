@@ -51,4 +51,16 @@ else
   echo "FAIL: normalisation is wrong"; tail -20 /tmp/wi-norm.log; rc=1
 fi
 
+echo "--- drift check survives malformed/empty/missing live files and a broken render ---"
+# A crash in drift.yml used to abort main.yml before report.yml ever ran,
+# discarding every other group's results. Each play in test-drift.yml seeds
+# a sentinel result before running the real drift.yml and asserts it is
+# still present afterwards, and that the broken case classifies as UNKNOWN
+# rather than PASS/FAIL or a fatal error.
+if $PLAYBOOK -i localhost, tests/whatif/test-drift.yml >/tmp/wi-drift.log 2>&1; then
+  echo "PASS: drift check degrades to UNKNOWN without crashing or losing other results"
+else
+  echo "FAIL: drift check crashed or misclassified a broken input"; tail -30 /tmp/wi-drift.log; rc=1
+fi
+
 exit $rc

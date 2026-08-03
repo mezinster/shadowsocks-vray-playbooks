@@ -4,6 +4,18 @@
 # template: module is declarative and total: it silently overwrites a
 # hand-edited live file and reports success. This is what turns that
 # silence into a visible report before deploy_server runs again.
+#
+# Every failure mode here (unreadable file, malformed/empty JSON, a broken
+# template render) must degrade to a DRIFT/UNKNOWN result, never crash the
+# play and never report PASS. A crash here would abort main.yml before
+# report.yml runs, discarding the LOCKOUT/PROXY/INTEGRITY results too --
+# producing nothing is the worst outcome for a tool whose only job is
+# answering "is it safe to run the real playbook".
+
+# failed_when: false so a broken render (e.g. a template referencing an
+# undefined variable) does not abort the play -- it leaves the destination
+# file unwritten, which the readability check below then reports as
+# UNKNOWN via the same path as any other unreadable file.
 - name: Rendering the server templates the deploy would install
   template:
     src: "../../server/templates/{{ item.src }}"
@@ -12,6 +24,7 @@
   loop:
     - { src: 'nginx-release.j2',      name: 'nginx-release.conf' }
     - { src: 'shadowsocks-config.j2', name: 'shadowsocks-config.json' }
+  failed_when: false
   changed_when: false
 
 # failed_when: false so an unreadable live file (permissions, or the path
@@ -28,52 +41,109 @@
   register: _wi_drift_raw
   failed_when: false
 
-- name: Recording the nginx drift result
-  set_fact:
-    whatif_results: "{{ whatif_results + [{
-        'group': 'DRIFT',
-        'status': _wi_nginx_status,
-        'name': 'nginx-release.j2 vs live',
-        'detail': _wi_nginx_detail }] }}"
-  vars:
-    _wi_nginx_rendered_ok: "{{ not (_wi_drift_raw.results[0].failed | default(false)) and ('content' in _wi_drift_raw.results[0]) }}"
-    _wi_nginx_live_ok: "{{ not (_wi_drift_raw.results[1].failed | default(false)) and ('content' in _wi_drift_raw.results[1]) }}"
-    _wi_norm_rendered: "{{ (_wi_drift_raw.results[0].content | b64decode) | regex_replace('(?m)^\\s*#.*$', '') | regex_replace('(?m)[ \\t]+$', '') | regex_replace('\\n+', '\\n') | trim if _wi_nginx_rendered_ok else '' }}"
-    _wi_norm_live: "{{ (_wi_drift_raw.results[1].content | b64decode) | regex_replace('(?m)^\\s*#.*$', '') | regex_replace('(?m)[ \\t]+$', '') | regex_replace('\\n+', '\\n') | trim if _wi_nginx_live_ok else '' }}"
-    _wi_nginx_status: "{{ 'UNKNOWN' if not (_wi_nginx_rendered_ok and _wi_nginx_live_ok) else ((_wi_norm_rendered == _wi_norm_live) | ternary('PASS', 'FAIL')) }}"
-    _wi_nginx_detail: >-
-      {{ 'could not read: ' ~ (_wi_drift_raw.results[1].msg | default('unreadable')) if not _wi_nginx_live_ok else
-         ('could not read rendered template: ' ~ (_wi_drift_raw.results[0].msg | default('unreadable')) if not _wi_nginx_rendered_ok else
-         ((_wi_norm_rendered == _wi_norm_live) | ternary('comments/whitespace only', 'FUNCTIONAL DIFFERENCE — deploy_server would change behaviour'))) }}
+# Comparing the nginx config is wrapped in its own block/rescue: a crash
+# here (e.g. a live file containing bytes that are not valid UTF-8, so
+# b64decode's implicit text conversion raises) must not stop the
+# shadowsocks comparison below from running, and must not stop report.yml
+# from running afterwards.
+- name: Comparing nginx-release.j2 against the live file
+  block:
+    - name: Recording the nginx drift result
+      set_fact:
+        whatif_results: "{{ whatif_results + [{
+            'group': 'DRIFT',
+            'status': _wi_nginx_status,
+            'name': 'nginx-release.j2 vs live',
+            'detail': _wi_nginx_detail }] }}"
+      vars:
+        _wi_nginx_rendered_ok: "{{ not (_wi_drift_raw.results[0].failed | default(false)) and ('content' in _wi_drift_raw.results[0]) }}"
+        _wi_nginx_live_ok: "{{ not (_wi_drift_raw.results[1].failed | default(false)) and ('content' in _wi_drift_raw.results[1]) }}"
+        _wi_norm_rendered: "{{ (_wi_drift_raw.results[0].content | b64decode) | regex_replace('(?m)^\\s*#.*$', '') | regex_replace('(?m)[ \\t]+$', '') | regex_replace('\\n+', '\\n') | trim if _wi_nginx_rendered_ok else '' }}"
+        _wi_norm_live: "{{ (_wi_drift_raw.results[1].content | b64decode) | regex_replace('(?m)^\\s*#.*$', '') | regex_replace('(?m)[ \\t]+$', '') | regex_replace('\\n+', '\\n') | trim if _wi_nginx_live_ok else '' }}"
+        _wi_nginx_status: "{{ 'UNKNOWN' if not (_wi_nginx_rendered_ok and _wi_nginx_live_ok) else ((_wi_norm_rendered == _wi_norm_live) | ternary('PASS', 'FAIL')) }}"
+        _wi_nginx_detail: >-
+          {{ 'could not read: ' ~ (_wi_drift_raw.results[1].msg | default('unreadable')) if not _wi_nginx_live_ok else
+             ('could not read rendered template: ' ~ (_wi_drift_raw.results[0].msg | default('unreadable')) if not _wi_nginx_rendered_ok else
+             ((_wi_norm_rendered == _wi_norm_live) | ternary('comments/whitespace only', 'FUNCTIONAL DIFFERENCE — deploy_server would change behaviour'))) }}
+  rescue:
+    # Backstop for anything unforeseen (not the expected unreadable-file
+    # path above, which never reaches here). Named so the operator knows
+    # which comparison failed and at what stage, not a bare traceback.
+    - name: Recording an UNKNOWN nginx drift result after an unexpected failure
+      set_fact:
+        whatif_results: "{{ whatif_results + [{
+            'group': 'DRIFT',
+            'status': 'UNKNOWN',
+            'name': 'nginx-release.j2 vs live',
+            'detail': 'could not compare nginx-release.j2: unexpected error — ' ~ (ansible_failed_result.msg | default('see task output') | truncate(160)) }] }}"
 
-- name: Recording the shadowsocks drift result
-  set_fact:
-    whatif_results: "{{ whatif_results + [{
-        'group': 'DRIFT',
-        'status': _wi_ss_status,
-        'name': 'shadowsocks-config.j2 vs live',
-        'detail': _wi_ss_detail }] }}"
-  vars:
-    _wi_ss_rendered_ok: "{{ not (_wi_drift_raw.results[2].failed | default(false)) and ('content' in _wi_drift_raw.results[2]) }}"
-    _wi_ss_live_ok: "{{ not (_wi_drift_raw.results[3].failed | default(false)) and ('content' in _wi_drift_raw.results[3]) }}"
-    # JSON is compared as parsed objects, not text, so key order and
-    # indentation on the live file cannot cause a false FAIL.
-    _wi_json_rendered: "{{ _wi_drift_raw.results[2].content | b64decode | from_json if _wi_ss_rendered_ok else {} }}"
-    _wi_json_live: "{{ _wi_drift_raw.results[3].content | b64decode | from_json if _wi_ss_live_ok else {} }}"
-    _wi_ss_status: "{{ 'UNKNOWN' if not (_wi_ss_rendered_ok and _wi_ss_live_ok) else ((_wi_json_rendered == _wi_json_live) | ternary('PASS', 'FAIL')) }}"
-    # Keys whose VALUE differs between the two sides (not merely the set of
-    # keys the two objects have in common -- listing every shared key as
-    # "differing" on any change would have buried the one key that actually
-    # moved, e.g. "server", in nine others that did not).
-    _wi_ss_diff_keys: >-
-      {%- set diffs = [] -%}
-      {%- for k in (_wi_json_rendered.keys() | list) | union(_wi_json_live.keys() | list) -%}
-      {%- if _wi_json_rendered.get(k) != _wi_json_live.get(k) -%}
-      {%- set _ = diffs.append(k) -%}
-      {%- endif -%}
-      {%- endfor -%}
-      {{ diffs | join(', ') }}
-    _wi_ss_detail: >-
-      {{ 'could not read: ' ~ (_wi_drift_raw.results[3].msg | default('unreadable')) if not _wi_ss_live_ok else
-         ('could not read rendered template: ' ~ (_wi_drift_raw.results[2].msg | default('unreadable')) if not _wi_ss_rendered_ok else
-         ((_wi_json_rendered == _wi_json_live) | ternary('identical', 'FUNCTIONAL DIFFERENCE — keys differing: ' ~ _wi_ss_diff_keys))) }}
+# json.tool validates BEFORE from_json is ever called on this content, so a
+# malformed or empty live config.json produces a precise "not valid JSON"
+# detail rather than relying solely on the rescue below to catch a raw
+# JSONDecodeError. failed_when: false: an invalid-JSON result here
+# (rc != 0) is an expected outcome to classify, not a reason to abort.
+- name: Validating that the shadowsocks JSON files parse before comparing them
+  command: "python3 -m json.tool {{ item }}"
+  loop:
+    - "{{ _wi_tmp.path }}/shadowsocks-config.json"
+    - "/home/{{ _wi_user }}/shadowsocks_config/docker/shadowsocks/config.json"
+  register: _wi_json_validate
+  failed_when: false
+  changed_when: false
+
+# Comparing the shadowsocks config is wrapped in its own block/rescue for
+# the same reason as the nginx block above: an unexpected failure here must
+# still produce a DRIFT/UNKNOWN result and let report.yml run, rather than
+# aborting the play and losing every other group's results.
+- name: Comparing shadowsocks-config.j2 against the live file
+  block:
+    - name: Recording the shadowsocks drift result
+      set_fact:
+        whatif_results: "{{ whatif_results + [{
+            'group': 'DRIFT',
+            'status': _wi_ss_status,
+            'name': 'shadowsocks-config.j2 vs live',
+            'detail': _wi_ss_detail }] }}"
+      vars:
+        _wi_ss_rendered_ok: "{{ not (_wi_drift_raw.results[2].failed | default(false)) and ('content' in _wi_drift_raw.results[2]) }}"
+        _wi_ss_live_ok: "{{ not (_wi_drift_raw.results[3].failed | default(false)) and ('content' in _wi_drift_raw.results[3]) }}"
+        _wi_ss_rendered_valid: "{{ _wi_ss_rendered_ok and ((_wi_json_validate.results[0].rc | default(1)) == 0) }}"
+        _wi_ss_live_valid: "{{ _wi_ss_live_ok and ((_wi_json_validate.results[1].rc | default(1)) == 0) }}"
+        # JSON is compared as parsed objects, not text, so key order and
+        # indentation on the live file cannot cause a false FAIL. from_json
+        # is only ever reached once both sides are confirmed readable AND
+        # valid JSON -- the guards below short-circuit the Jinja
+        # conditional expression, so from_json is never invoked on
+        # unreadable or malformed content.
+        _wi_json_rendered: "{{ (_wi_drift_raw.results[2].content | b64decode | from_json) if _wi_ss_rendered_valid else {} }}"
+        _wi_json_live: "{{ (_wi_drift_raw.results[3].content | b64decode | from_json) if _wi_ss_live_valid else {} }}"
+        _wi_ss_status: >-
+          {{ 'UNKNOWN' if not (_wi_ss_rendered_ok and _wi_ss_live_ok) else
+             ('UNKNOWN' if not (_wi_ss_rendered_valid and _wi_ss_live_valid) else
+             ((_wi_json_rendered == _wi_json_live) | ternary('PASS', 'FAIL'))) }}
+        # Keys whose VALUE differs between the two sides (not merely the set
+        # of keys the two objects have in common -- listing every shared key
+        # as "differing" on any change would have buried the one key that
+        # actually moved, e.g. "server", in nine others that did not).
+        _wi_ss_diff_keys: >-
+          {%- set diffs = [] -%}
+          {%- for k in (_wi_json_rendered.keys() | list) | union(_wi_json_live.keys() | list) -%}
+          {%- if _wi_json_rendered.get(k) != _wi_json_live.get(k) -%}
+          {%- set _ = diffs.append(k) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ diffs | join(', ') }}
+        _wi_ss_detail: >-
+          {{ 'could not read: ' ~ (_wi_drift_raw.results[3].msg | default('unreadable')) if not _wi_ss_live_ok else
+             ('could not read rendered template: ' ~ (_wi_drift_raw.results[2].msg | default('unreadable')) if not _wi_ss_rendered_ok else
+             ('live config.json is not valid JSON: ' ~ (_wi_json_validate.results[1].stderr | default('parse error') | truncate(120)) if not _wi_ss_live_valid else
+             ('rendered config.json is not valid JSON: ' ~ (_wi_json_validate.results[0].stderr | default('parse error') | truncate(120)) if not _wi_ss_rendered_valid else
+             ((_wi_json_rendered == _wi_json_live) | ternary('identical', 'FUNCTIONAL DIFFERENCE — keys differing: ' ~ _wi_ss_diff_keys))))) }}
+  rescue:
+    - name: Recording an UNKNOWN shadowsocks drift result after an unexpected failure
+      set_fact:
+        whatif_results: "{{ whatif_results + [{
+            'group': 'DRIFT',
+            'status': 'UNKNOWN',
+            'name': 'shadowsocks-config.j2 vs live',
+            'detail': 'could not compare shadowsocks-config.j2: unexpected error — ' ~ (ansible_failed_result.msg | default('see task output') | truncate(160)) }] }}"
