@@ -3,3 +3,4 @@ variables.yml
 venv
 client-config
 inventories/hosts.ini
+tests/render/out

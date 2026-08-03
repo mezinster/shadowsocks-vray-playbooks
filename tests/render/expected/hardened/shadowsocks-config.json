@@ -1,0 +1,12 @@
+{
+    "server":"0.0.0.0",
+    "server_port":9000,
+    "password":"DUMMY_NOT_A_REAL_PASSWORD",
+    "timeout":300,
+    "method": "chacha20-ietf-poly1305",
+    "fast_open": true,
+    "nameserver":"1.1.1.1",
+    "mode":"tcp_only",
+    "plugin":"v2ray-plugin",
+    "plugin_opts":"server;tls;host=proxy.example.test;cert=/data/certs/live/proxy.example.test/fullchain.pem;key=/data/certs/live/proxy.example.test/privkey.pem;"
+}

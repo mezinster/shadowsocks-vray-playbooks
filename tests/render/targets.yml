@@ -1,0 +1,3 @@
+render_targets:
+  - { src: "../../deploy/roles/server/templates/shadowsocks-config.j2", name: "shadowsocks-config.json" }
+  - { src: "../../deploy/roles/server/templates/nginx-release.j2",      name: "nginx-release.conf" }
