@@ -65,6 +65,14 @@ make deploy_server
 ansible-playbook -i inventories/hosts.ini --extra-vars "@variables.yml" deploy/server.yml
 ```
 
+### Template regression tests
+```bash
+./tests/run.sh              # render all templates, diff against goldens
+./tests/run.sh --update     # regenerate goldens after an intended change
+```
+
+Server-role templates are rewritten wholesale on every `make deploy_server`, so a hand-edit on the server is reverted silently. These goldens turn that into a visible diff.
+
 ### Client Configuration
 ```bash
 # Generate client configs (creates client-config/ directory with JSON, QR codes)
@@ -154,6 +162,61 @@ The `roles/client/` role uses:
 - `ss-qrcode/ss-qrcode.py`: Python script to generate QR codes for mobile clients
 - Templates to format connection strings with user's host/password/encryption settings
 - Local execution (no remote server interaction)
+
+### SSH hardening and the dual-port design
+
+`roles/setup/tasks/ssh.yml` deploys `/etc/ssh/sshd_config.d/10-hardening.conf`.
+The `10-` prefix is required: `Include` sits at line 12 of `sshd_config` and
+sshd takes the **first** value seen for most keywords, so the drop-in must sort
+before `60-cloudimg-settings.conf`.
+
+When `ssh_port` differs from 22 and `ssh_keep_port_22` is true, sshd binds
+**both**. Blocking 22 is delegated to the cloud firewall so that provider web
+consoles — which typically reach only port 22 — remain a break-glass path.
+
+Three pre-flight `assert` tasks run before any change is made: the
+`ssh_keep_port_22` / `ssh_accept_lockout_risk` guard, a check that the current
+connection is not `ansible_user=root` (`harden_ssh` sets `PermitRootLogin no`),
+and a check that the connection does not carry `ansible_password` /
+`ansible_ssh_pass` (`harden_ssh` sets `AuthenticationMethods publickey` and
+`PasswordAuthentication no`). All three only see what Ansible's own connection
+variables expose — they cannot detect root reached via `User root` in
+`~/.ssh/config`, nor a key that is offered but not yet authorised on the
+server. They reduce lockout risk; they do not eliminate it.
+
+The role verifies its own change by resetting the connection and
+re-authenticating with `ping` over the new port. This re-authenticates through
+Ansible's own SSH transport, so a semantic lockout fails the play; `wait_for`
+would only prove a TCP socket was open. The `meta: flush_handlers` / `meta:
+reset_connection` pair that does this lives in a separate file,
+`deploy/roles/setup/tasks/ssh-reconnect.yml`, included only `when: harden_ssh |
+bool`. That split exists because in ansible-core 2.11, those two `meta` tasks
+do not honour a `when:` on their enclosing block — they run anyway, with a
+warning. Gating the *include* works because an include is an ordinary task
+whose `when` IS honoured. Do not "simplify" this back into `ssh.yml`.
+
+On failure, the `rescue` block falls back to the SSH port that was in use
+**before this run started** (`_ssh_pre_hardening_port`), not a hardcoded 22 —
+if the operator's pre-existing connection was already on some other custom
+port, jumping to 22 would itself go unreachable. Residual risk, documented but
+not closed: if the failure happens **after** sshd reloads and that
+pre-hardening port was neither `ssh_port` nor 22, the fallback port is not
+guaranteed to still be bound.
+
+`deploy/roles/setup/defaults/main.yml` supplies safe defaults (`harden_ssh:
+no`, `ssh_port: 22`, etc.) for every hardening variable, so an operator
+upgrading from a pre-hardening `variables.yml` does not hit `'harden_ssh' is
+undefined`. Role defaults are Ansible's lowest-precedence source, so
+`variables.yml` and `-e` extra-vars still override them.
+
+**Verification status:** the rescue path's unreachable-handling and the `meta`
+gating were empirically tested against ansible-core 2.11.5 with throwaway
+playbooks (a forced failure produced `rescued=1`; `harden_ssh: no` produced
+zero meta tasks and zero warnings). Execution against a real target host —
+`fallocate`/`mkswap`/`swapon`, the actual `apt install fail2ban` and service
+start, `sshd -t` against real host keys, and whether `service: ssh state:
+reloaded` rebinds new ports under the target's systemd — has not been verified
+live. Validate on a throwaway instance before pointing this at production.
 
 ## Important Considerations
 
