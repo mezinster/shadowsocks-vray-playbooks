@@ -1,0 +1,27 @@
+- name: Installing fail2ban
+  when: install_fail2ban | bool
+  block:
+    - name: Installing the fail2ban package
+      become: yes
+      apt:
+        name: fail2ban
+        state: present
+        update_cache: yes
+        cache_valid_time: 86400
+
+    - name: Configuring fail2ban jails
+      become: yes
+      template:
+        src: jail.local.j2
+        dest: /etc/fail2ban/jail.local
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart fail2ban
+
+    - name: Enabling fail2ban
+      become: yes
+      service:
+        name: fail2ban
+        enabled: yes
+        state: started

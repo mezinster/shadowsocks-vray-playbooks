@@ -1,0 +1,32 @@
+# Managed by Ansible (roles/setup/tasks/fail2ban.yml).  Manual edits are overwritten.
+[DEFAULT]
+bantime  = {{ fail2ban_bantime }}
+findtime = {{ fail2ban_findtime }}
+maxretry = {{ fail2ban_maxretry }}
+ignoreip = 127.0.0.1/8 ::1
+# ufw rather than the default iptables-multiport, so bans appear in
+# `ufw status` and survive a `ufw reload`.  Note the ufw action bans the
+# source address on ALL ports, not just SSH.
+banaction          = ufw
+banaction_allports = ufw
+
+[sshd]
+enabled  = true
+port     = {{ ssh_port }}{% if ssh_keep_port_22 and ssh_port != 22 %},22{% endif %}
+
+# backend/logpath pinned explicitly: persistent journald storage is not
+# configured on the Ubuntu cloud image, whereas /var/log/auth.log is populated.
+backend  = auto
+logpath  = /var/log/auth.log
+maxretry = {{ fail2ban_maxretry }}
+
+# Second-order jail: catches hosts that return after their first ban expires.
+# Values are intentionally not parameterised -- they only make sense relative
+# to [sshd], and four more variables to tune them would be YAGNI.
+[recidive]
+enabled   = true
+logpath   = /var/log/fail2ban.log
+banaction = ufw
+bantime   = 4w
+findtime  = 1d
+maxretry  = 3

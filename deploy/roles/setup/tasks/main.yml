@@ -10,3 +10,6 @@
 - name: Hardening ssh
   import_tasks: ssh.yml
 
+- name: Installing fail2ban
+  import_tasks: fail2ban.yml
+
