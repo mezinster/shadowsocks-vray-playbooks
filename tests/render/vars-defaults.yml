@@ -1,0 +1,32 @@
+user: server_user
+host: yourserver.domain.net
+email: youremail@provider.com
+proxy_password: yourpassword
+method: chacha20-ietf-poly1305
+local_port: 8000
+fast_open: true
+endpoint: ss
+enable_firewall: yes
+
+# --- Host hardening (every default below is a no-op) ---------------------
+# Master switch for the sshd drop-in.  Leave `no` unless you have read the
+# lockout notes in README.md.
+harden_ssh: no
+ssh_port: 22
+# Also bind port 22 when ssh_port differs.  Provider web consoles (AWS
+# Lightsail and others) can often only reach 22 and cannot be retargeted, so
+# leaving it bound turns break-glass into one toggle in the provider UI.
+# Block 22 at the CLOUD firewall, not on the host.
+ssh_keep_port_22: yes
+# Empty list emits no AllowUsers directive.  Example: [ubuntu]
+ssh_allow_users: []
+# Permits harden_ssh with ssh_keep_port_22=no, which removes the rollback path.
+ssh_accept_lockout_risk: no
+
+install_fail2ban: no
+fail2ban_maxretry: 3
+fail2ban_findtime: 1h
+fail2ban_bantime: 24h
+
+# 0 disables swap handling entirely.  2048 = 2GB.
+swap_size_mb: 0

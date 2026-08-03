@@ -7,3 +7,12 @@
 - name: Setting network
   import_tasks: network.yml
 
+- name: Hardening ssh
+  import_tasks: ssh.yml
+
+- name: Installing fail2ban
+  import_tasks: fail2ban.yml
+
+- name: Configuring swap
+  import_tasks: swap.yml
+

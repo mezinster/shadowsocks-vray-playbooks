@@ -17,7 +17,12 @@ import subprocess
 VAULT_HEADER = "$ANSIBLE_VAULT;"
 
 # Entries from .gitignore to skip (not sensitive data)
-SKIP_ENTRIES = {"venv", ".history"}
+# - venv: Python virtualenv, not project data
+# - .history: editor local history, not project data
+# - tests/render/out: golden-file test harness output (tests/run.sh), regenerated
+#   on every run — build output, not sensitive data
+# - __pycache__: compiled Python bytecode, not project data
+SKIP_ENTRIES = {"venv", ".history", "tests/render/out", "__pycache__"}
 
 PRE_COMMIT_HOOK = """\
 #!/bin/sh

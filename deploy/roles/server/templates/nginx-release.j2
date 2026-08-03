@@ -1,3 +1,11 @@
+# Reject TLS handshakes that do not present our SNI.  Probing the bare IP
+# returns an unrecognized_name alert instead of the certificate, so the domain
+# is not discoverable by address scanning.  Requires nginx >= 1.19.4.
+server {
+  listen 443 ssl default_server;
+  ssl_reject_handshake on;
+}
+
 server {  
   listen 443 ssl;
 

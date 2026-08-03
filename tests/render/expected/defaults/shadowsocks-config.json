@@ -1,0 +1,12 @@
+{
+    "server":"127.0.0.1",
+    "server_port":9000,
+    "password":"yourpassword",
+    "timeout":300,
+    "method": "chacha20-ietf-poly1305",
+    "fast_open": true,
+    "nameserver":"1.1.1.1",
+    "mode":"tcp_only",
+    "plugin":"v2ray-plugin",
+    "plugin_opts":"server;tls;host=yourserver.domain.net;cert=/data/certs/live/yourserver.domain.net/fullchain.pem;key=/data/certs/live/yourserver.domain.net/privkey.pem;"
+}

@@ -1,0 +1,11 @@
+# Split out from ssh.yml (fix round 1, IMPORTANT 4): meta: flush_handlers and
+# meta: reset_connection do not honour a `when` on their enclosing block in
+# ansible-core 2.11 -- they run unconditionally with a WARNING regardless.
+# Gating the *include* with `when: harden_ssh | bool` (an ordinary task,
+# whose `when` IS honoured) means these meta tasks are only ever loaded and
+# executed when the include itself runs.
+- name: Reloading sshd before verifying it
+  meta: flush_handlers
+
+- name: Dropping the old connection
+  meta: reset_connection

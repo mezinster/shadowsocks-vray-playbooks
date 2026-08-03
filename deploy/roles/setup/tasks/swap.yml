@@ -1,0 +1,64 @@
+- name: Configuring swap
+  when: swap_size_mb | int > 0
+  block:
+    - name: Checking for active swap
+      become: yes
+      command: swapon --show --noheadings
+      register: _swap_show
+      changed_when: false
+
+    - name: Creating the swap file
+      when: _swap_show.stdout | trim == ""
+      block:
+        - name: Allocating the swap file
+          become: yes
+          command: "fallocate -l {{ swap_size_mb }}M /swapfile"
+          args:
+            creates: /swapfile
+
+        - name: Restricting swap file permissions
+          become: yes
+          file:
+            path: /swapfile
+            owner: root
+            group: root
+            mode: '0600'
+
+        - name: Formatting the swap file
+          become: yes
+          command: mkswap /swapfile
+
+        - name: Enabling swap
+          become: yes
+          command: swapon /swapfile
+
+    - name: Checking whether the swap file exists
+      become: yes
+      stat:
+        path: /swapfile
+      register: _swapfile_stat
+
+    # Gated on the file actually existing on disk (checked AFTER the creation
+    # block above), not on _swap_show: a host with other swap already active
+    # (a swap partition, zram) legitimately skips creation, and must NOT get
+    # an fstab entry for a /swapfile that was never made -- that produces a
+    # permanently-failing swapfile.swap unit on reboot. Checking .stat.exists
+    # instead keeps this idempotent on re-runs where /swapfile does exist.
+    - name: Persisting swap across reboots
+      become: yes
+      lineinfile:
+        path: /etc/fstab
+        regexp: '^\s*/swapfile\s+'
+        line: "/swapfile none swap sw 0 0"
+        state: present
+      when: _swapfile_stat.stat.exists
+
+    - name: Lowering swappiness for a small proxy host
+      become: yes
+      copy:
+        dest: /etc/sysctl.d/99-swappiness.conf
+        content: "vm.swappiness=10\n"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: apply sysctl

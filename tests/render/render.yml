@@ -1,0 +1,24 @@
+# Renders role templates to a temp dir so they can be diffed against goldens.
+# Run via tests/run.sh, not directly.
+- name: Render role templates for golden-file comparison
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars_files:
+    - targets.yml
+    - "{{ varset }}"
+  tasks:
+    - name: Ensure output directory exists
+      file:
+        path: "{{ outdir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Render each template
+      template:
+        src: "{{ item.src }}"
+        dest: "{{ outdir }}/{{ item.name }}"
+        mode: '0644'
+      loop: "{{ render_targets }}"
+      loop_control:
+        label: "{{ item.name }}"

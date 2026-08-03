@@ -8,9 +8,10 @@
 3. [Before starting](#pre-setup)
 4. [Local environment setup](#local-setup)
 5. [Server configs](#server-setup)
-6. [Deploy and tags](#deploy)
-7. [Client setup](#client)
-8. [Typical errors](#faq)
+6. [Host hardening (optional)](#hardening)
+7. [Deploy and tags](#deploy)
+8. [Client setup](#client)
+9. [Typical errors](#faq)
 
 
 # About <a id="about"></a>
@@ -81,6 +82,11 @@ pip install -r requirements.txt
 
 Use `source venv/bin/activate' to activate virtual environment before deployment
 
+Note: this repo ships its own `ansible.cfg`, and Ansible only ever loads the
+first config file it finds (it does not merge several) — so it completely
+shadows any personal `~/.ansible.cfg` you may have; copy over anything you
+rely on there into `./ansible.cfg`.
+
 
 # Server configuration <a id="server-setup"></a>
 
@@ -99,6 +105,87 @@ Use `source venv/bin/activate' to activate virtual environment before deployment
 2. Duplicate `inventories/hosts.example.ini` and rename to `hosts.ini`. Modify it with your own values:
 
 - server ansible_host= domain you registered in "Before starting" step
+
+# Host hardening (optional) <a id="hardening"></a>
+
+All hardening defaults to **off**. An unmodified checkout behaves exactly as
+before.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `harden_ssh` | `no` | Deploy the sshd hardening drop-in |
+| `ssh_port` | `22` | Port sshd listens on |
+| `ssh_keep_port_22` | `yes` | Also bind 22 for provider-console break-glass |
+| `ssh_allow_users` | `[]` | `AllowUsers` list; empty emits no directive |
+| `ssh_accept_lockout_risk` | `no` | Permit the unrecoverable combination |
+| `install_fail2ban` | `no` | Install and configure fail2ban |
+| `fail2ban_maxretry` | `3` | Failures before a ban |
+| `fail2ban_findtime` | `1h` | Window those failures are counted in |
+| `fail2ban_bantime` | `24h` | Ban duration |
+| `swap_size_mb` | `0` | Swap file size; `0` disables |
+
+All of these variables already have safe defaults in
+`deploy/roles/setup/defaults/main.yml`, so an existing `variables.yml` created
+before hardening was added does not need to be edited to keep working.
+
+### Before you set `ssh_port`
+
+**Add a matching `ansible_port` to `inventories/hosts.ini`:**
+
+    server ansible_host=yourserver.com ansible_port=52200
+
+Without it, every `make` target stops connecting the moment the old port is
+closed at your cloud firewall.
+
+**Open the new port at your cloud firewall before running the playbook**, and
+close the old one only after you have confirmed a login on the new port.
+
+### Why port 22 stays bound
+
+With `ssh_keep_port_22: yes` (the default) sshd listens on both the new port
+and 22. Blocking 22 is your **cloud firewall's** job, not the host's. Provider
+web consoles — AWS Lightsail's browser SSH among them — can often only reach
+port 22 and cannot be retargeted. Leaving it bound means recovering from a
+lockout is one toggle in the provider UI instead of a snapshot-and-disk-swap.
+
+Setting `ssh_keep_port_22: no` removes the playbook's own rollback path, so it
+is refused unless you also set `ssh_accept_lockout_risk: yes`.
+
+### Pre-flight checks (and their limits)
+
+Before touching sshd, the role refuses to run if:
+- `harden_ssh` is on, `ssh_keep_port_22` is off, and `ssh_accept_lockout_risk`
+  is not set — see above.
+- the current connection is `ansible_user=root` — `harden_ssh` sets
+  `PermitRootLogin no`, which would lock root out.
+- the current connection authenticates with a password (`ansible_password` /
+  `ansible_ssh_pass`) — `harden_ssh` sets `AuthenticationMethods publickey`
+  and `PasswordAuthentication no`, which would lock it out.
+
+These checks only see what Ansible's own connection variables expose. They
+cannot detect root reached via `User root` in `~/.ssh/config`, nor a key that
+is offered but not yet authorised on the server. They reduce the risk of a
+lockout; they do not eliminate it.
+
+### fail2ban bans are not SSH-only
+
+The `ufw` ban action blocks the offending address on **all ports**, including
+443. A host that fails SSH authentication will also lose the proxy. Unban with:
+
+    sudo fail2ban-client set sshd unbanip <IP>
+
+### A re-run can ban yourself: `MaxAuthTries 3` + a loaded ssh-agent
+
+The hardening drop-in sets `MaxAuthTries 3`, and fail2ban's `ignoreip` only
+covers loopback. If your `ssh-agent` offers four or more keys, sshd can burn
+through the auth budget before your intended key is even tried — on a
+**re-run** of this playbook (the first run is safe, since fail2ban is
+installed only after ssh.yml). Once that happens, fail2ban's `ufw` banaction
+blocks you on all ports, proxy included, exactly as above. Add
+`IdentitiesOnly yes` to the relevant `Host` block in your `~/.ssh/config` so
+only the intended key is offered, and consider extending fail2ban's
+`ignoreip` (in `jail.local.j2` / `fail2ban_*` variables) with a trusted
+address you connect from. Recover with the same `unbanip` command above.
 
 # Deploy and tags <a id="deploy"></a>
 
