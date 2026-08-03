@@ -13,6 +13,15 @@
       set_fact:
         whatif_results: []
 
+    - name: Identifying the live connection
+      include_tasks: connection.yml
+
+    - name: Snapshotting guarded files before any check runs
+      include_tasks: integrity_before.yml
+
+    - name: Verifying guarded files were not modified by this preflight
+      include_tasks: integrity_after.yml
+
     - name: Reporting
       include_tasks: report.yml
 

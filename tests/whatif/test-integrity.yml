@@ -1,0 +1,41 @@
+# The integrity comparison must notice a file that changed between snapshots.
+- name: Integrity guard detects modification
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks:
+    # integrity_after.yml appends to whatif_results (Task 1's interface); outside
+    # of main.yml's block it is never initialised, so this test seeds it the same
+    # way main.yml does before including either integrity_*.yml task file.
+    - name: Starting with an empty result set
+      set_fact:
+        whatif_results: []
+
+    - name: Creating two probe files
+      copy:
+        dest: "/tmp/wi-probe-{{ item }}.txt"
+        content: "original\n"
+      loop: [stable, mutated]
+
+    # integrity_before.yml BUILDS _wi_guarded_paths from
+    # whatif_guarded_paths + [_wi_authorized_keys], so feed it through those two
+    # variables. Setting _wi_guarded_paths directly here would be overwritten.
+    - include_tasks: ../../deploy/roles/whatif/tasks/integrity_before.yml
+      vars:
+        whatif_guarded_paths: ['/tmp/wi-probe-mutated.txt']
+        _wi_authorized_keys: /tmp/wi-probe-stable.txt
+
+    - name: Mutating exactly one of them
+      copy:
+        dest: /tmp/wi-probe-mutated.txt
+        content: "CHANGED\n"
+
+    - include_tasks: ../../deploy/roles/whatif/tasks/integrity_after.yml
+
+    - name: The guard must report FAIL and name the mutated file
+      assert:
+        that:
+          - whatif_results | selectattr('group','equalto','INTEGRITY') | selectattr('status','equalto','FAIL') | list | length == 1
+          - "'wi-probe-mutated' in (whatif_results | selectattr('group','equalto','INTEGRITY') | map(attribute='detail') | join(' '))"
+          - "'wi-probe-stable' not in (whatif_results | selectattr('group','equalto','INTEGRITY') | map(attribute='detail') | join(' '))"
+        fail_msg: "integrity guard did not detect the mutated file, or falsely flagged the stable one"

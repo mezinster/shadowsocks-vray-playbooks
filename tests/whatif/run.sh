@@ -27,4 +27,18 @@ else
   echo "FAIL: output does not name the failing check"; tail -20 /tmp/wi-fail.log; rc=1
 fi
 
+echo "--- integrity guard detects modification ---"
+# The guard's stat tasks carry become: yes for real deployments, where the
+# connecting user needs root to read files like /etc/ssh/sshd_config. This
+# self-test only touches /tmp probe files the invoking user already owns, so
+# it forces ansible_become=false (an extra-var, which outranks the task-level
+# become: yes) rather than requiring passwordless sudo on every dev machine
+# that runs the test suite.
+if $PLAYBOOK -i localhost, tests/whatif/test-integrity.yml -e "ansible_become=false" >/tmp/wi-int.log 2>&1; then
+  echo "PASS: guard detected the mutated file only"
+else
+  echo "FAIL: guard did not behave correctly"; tail -20 /tmp/wi-int.log; rc=1
+fi
+rm -f /tmp/wi-probe-*.txt
+
 exit $rc

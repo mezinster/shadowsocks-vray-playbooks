@@ -2,3 +2,13 @@
 whatif_shadow_sshd: no
 # Fail the certificate check below this many days remaining.
 whatif_cert_min_days: 14
+
+# Files the hardening playbook can write. The preflight checksums each before
+# and after its own run and asserts they are unchanged — so "modified nothing"
+# is a verified output line, not a promise.
+whatif_guarded_paths:
+  - /etc/ssh/sshd_config
+  - /etc/ssh/sshd_config.d/10-hardening.conf
+  - /etc/fail2ban/jail.local
+  - /etc/fstab
+  - /etc/sysctl.d/99-swappiness.conf

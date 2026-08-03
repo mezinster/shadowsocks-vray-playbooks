@@ -1,0 +1,9 @@
+- name: Determining the connecting user
+  command: id -un
+  register: _wi_whoami
+  changed_when: false
+
+- name: Recording connection facts
+  set_fact:
+    _wi_user: "{{ _wi_whoami.stdout | trim }}"
+    _wi_authorized_keys: "{{ ansible_env.HOME }}/.ssh/authorized_keys"

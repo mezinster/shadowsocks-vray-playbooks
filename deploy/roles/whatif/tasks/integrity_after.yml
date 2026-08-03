@@ -1,0 +1,29 @@
+- name: Snapshotting guarded files after all checks
+  become: yes
+  stat:
+    path: "{{ item }}"
+    get_checksum: yes
+    checksum_algorithm: sha256
+  loop: "{{ _wi_guarded_paths }}"
+  register: _wi_after
+  changed_when: false
+
+- name: Collecting any path whose checksum moved
+  set_fact:
+    _wi_modified: "{{ _wi_modified | default([]) + [item.item] }}"
+  loop: "{{ _wi_after.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: (item.stat.checksum | default('ABSENT')) != _wi_before_map[item.item]
+
+- name: Recording the integrity result
+  set_fact:
+    whatif_results: "{{ whatif_results + [{
+        'group': 'INTEGRITY',
+        'status': _wi_integrity_ok | ternary('PASS', 'FAIL'),
+        'name': 'no file modified by this preflight',
+        'detail': _wi_integrity_ok | ternary(
+            (_wi_guarded_paths | length) ~ ' checksums unchanged',
+            'MODIFIED: ' ~ (_wi_modified | default([]) | join(', '))) }] }}"
+  vars:
+    _wi_integrity_ok: "{{ (_wi_modified | default([]) | length) == 0 }}"

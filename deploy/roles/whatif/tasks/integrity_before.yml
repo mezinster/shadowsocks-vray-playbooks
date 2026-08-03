@@ -1,0 +1,22 @@
+- name: Recording the full guarded path list
+  set_fact:
+    _wi_guarded_paths: "{{ whatif_guarded_paths + [_wi_authorized_keys] }}"
+
+- name: Snapshotting guarded files before any check runs
+  become: yes
+  stat:
+    path: "{{ item }}"
+    get_checksum: yes
+    checksum_algorithm: sha256
+  loop: "{{ _wi_guarded_paths }}"
+  register: _wi_before
+  changed_when: false
+
+# Flatten to {path: checksum} so the after-comparison is a plain dict diff.
+# A missing file is recorded as 'ABSENT' — its later appearance is a change.
+- name: Reducing the snapshot to a path/checksum map
+  set_fact:
+    _wi_before_map: "{{ _wi_before_map | default({}) | combine({ item.item: (item.stat.checksum | default('ABSENT')) }) }}"
+  loop: "{{ _wi_before.results }}"
+  loop_control:
+    label: "{{ item.item }}"
