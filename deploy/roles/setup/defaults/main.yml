@@ -1,0 +1,20 @@
+# Fix round 1, MINOR 7: an existing user who pulls this repo but keeps their
+# OLD variables.yml (predating the hardening variables) must not break with
+# "'harden_ssh' is undefined". Role defaults are the lowest-precedence
+# variable source in Ansible, so variables.yml and -e extra-vars still
+# override every one of these -- see the fix report for the precedence
+# check. Values mirror variables.example.yml's no-op defaults exactly.
+
+harden_ssh: no
+ssh_port: 22
+ssh_keep_port_22: yes
+ssh_allow_users: []
+ssh_accept_lockout_risk: no
+
+install_fail2ban: no
+fail2ban_maxretry: 3
+fail2ban_findtime: 1h
+fail2ban_bantime: 24h
+
+# 0 disables swap handling entirely.
+swap_size_mb: 0

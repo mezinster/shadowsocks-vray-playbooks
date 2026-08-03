@@ -9,9 +9,51 @@
       block below would have no route back to the host. Set
       ssh_accept_lockout_risk=yes to override deliberately.
 
+# Fix round 1, IMPORTANT 5: AuthenticationMethods publickey + PermitRootLogin no
+# would lock out any operator whose *current* connection is as root or via a
+# password. Best-effort pre-flight: these only see what Ansible's own
+# connection variables expose (ansible_user / ansible_password /
+# ansible_ssh_pass). They cannot detect "root via ssh_config User root" or "a
+# key is offered but not yet authorized on the server" -- see the fix report.
+- name: Refusing to harden ssh while connected as root
+  assert:
+    that:
+      - (not harden_ssh | bool)
+        or ((ansible_user | default('')) != 'root')
+    fail_msg: >-
+      harden_ssh sets PermitRootLogin no, but this play is connecting as root
+      (ansible_user=root). That would be locked out by the change. Create a
+      non-root user with sudo/become privileges, add it to ssh_allow_users,
+      point ansible_user/the inventory at it, confirm you can log in as that
+      user with your SSH key, and re-run.
+
+- name: Refusing to harden ssh when this connection uses password authentication
+  assert:
+    that:
+      - (not harden_ssh | bool)
+        or (ansible_password is not defined and ansible_ssh_pass is not defined)
+    fail_msg: >-
+      harden_ssh sets AuthenticationMethods publickey and
+      PasswordAuthentication no, which would lock out a password-based
+      connection. This play appears to authenticate with a password
+      (ansible_password or ansible_ssh_pass is set). Configure a public key
+      for this host, confirm `ssh <host>` succeeds with that key and no
+      password prompt, remove the password variable, and re-run.
+
 - name: Hardening sshd
   when: harden_ssh | bool
   block:
+    # Fix round 1, IMPORTANT 3: the assert above only guarantees port 22 will
+    # be CONFIGURED once the drop-in is written, not that sshd is currently
+    # listening on 22 right now (the operator may already be on a custom
+    # port, e.g. inventory ansible_port=2222). Capture whatever port got us
+    # here so a pre-reload failure rolls back to a port that is provably
+    # still bound, instead of guessing 22. See the fix report for the
+    # residual risk this does NOT close.
+    - name: Recording the SSH port in use before this run
+      set_fact:
+        _ssh_pre_hardening_port: "{{ ansible_port | default(22) }}"
+
     - name: Deploying sshd hardening drop-in
       become: yes
       template:
@@ -33,30 +75,72 @@
       command: /usr/sbin/sshd -t
       changed_when: false
 
-    - name: Reloading sshd before verifying it
-      meta: flush_handlers
-
-    - name: Dropping the old connection
-      meta: reset_connection
+    # Fix round 1, IMPORTANT 4: in ansible-core 2.11, meta: flush_handlers and
+    # meta: reset_connection do not honour a `when` on the block they sit in
+    # (strategy/__init__.py logs a warning and runs them anyway). Directly
+    # nesting them under `when: harden_ssh | bool` meant they fired on every
+    # run, including the default harden_ssh=no, forcing a pointless
+    # reset_connection each deploy. include_tasks *is* a normal task, so a
+    # `when` on the include itself is honoured, and the meta tasks inside are
+    # only ever loaded when the include actually runs. Verified live against
+    # 2.11.5 -- see the fix report.
+    - name: Reconnecting after applying the sshd hardening drop-in
+      include_tasks: ssh-reconnect.yml
+      when: harden_ssh | bool
 
     - name: Switching to the new SSH port
       set_fact:
-        ansible_port: "{{ ssh_port }}"
+        # Fix round 1, MINOR 6: ssh_port | int guards against ssh_port arriving
+        # as the string "22" (e.g. -e ssh_port=22), matching the same
+        # coercion added to the template's Port-22 comparison.
+        ansible_port: "{{ ssh_port | int }}"
 
     # A real authentication over the new port.  wait_for would only prove a
     # TCP socket is open -- an sshd that accepts connections and rejects every
     # key would pass it.  This re-authenticates through Ansible's own SSH
     # transport, so a semantic lockout (wrong AllowUsers, AuthenticationMethods
     # excluding the key) fails the play instead of passing it.
+    #
+    # Fix round 1, CRITICAL 1: a connection/auth failure here makes the host
+    # UNREACHABLE, not FAILED. In ansible-core 2.11
+    # (strategy/__init__.py:588-591) unreachable hosts are pulled out of
+    # _unreachable_hosts/_removed_hosts without ever calling
+    # mark_host_failed(), so FAILED_TASKS is never set and `rescue` below is
+    # skipped entirely (verified live: rescued=0). ignore_unreachable keeps
+    # the host active and turns the outcome into a registered result instead
+    # of an play-ending removal; the following task then fails the block
+    # *locally* (assert/fail are connection-free action plugins -- they do
+    # not need to reach the host to run) whenever the ping was unreachable OR
+    # failed, which is what actually reaches `rescue` (verified live:
+    # rescued=1).
     - name: Verifying authentication over the new port
       ping:
+      register: _ping
+      ignore_unreachable: yes
+
+    - name: Failing when authentication over the new port did not succeed
+      fail:
+        msg: >-
+          Verifying authentication over the new port did not succeed
+          (unreachable or failed): {{ _ping }}
+      when: (_ping is failed) or (_ping is unreachable)
 
   rescue:
-    # Hardcoded 22, not a variable: the assert above guarantees 22 is bound
-    # whenever this path is reachable without an explicit override.
-    - name: Falling back to port 22
+    # Fix round 1, IMPORTANT 3: return to the port recorded before this run,
+    # not a hardcoded 22. If we failed BEFORE the reload (template validate,
+    # or the assembled `sshd -t`), sshd never changed, so this port is
+    # guaranteed to still be bound -- strictly safer than assuming 22.
+    #
+    # RESIDUAL RISK (documented, not closed -- see fix report): if we failed
+    # AFTER the reload (the "Verifying authentication" ping/fail above) and
+    # the pre-hardening port was some custom value that is neither the new
+    # ssh_port nor 22, that port is no longer guaranteed bound post-reload --
+    # only ssh_port and (when ssh_keep_port_22) 22 are. In that specific
+    # case this fallback can itself be unreachable. Falls back to the
+    # literal 22 only if the recorded fact is somehow missing.
+    - name: Falling back to the pre-hardening SSH port
       set_fact:
-        ansible_port: 22
+        ansible_port: "{{ _ssh_pre_hardening_port | default(22) }}"
 
     - name: Dropping the failed connection
       meta: reset_connection
@@ -73,6 +157,20 @@
 
     # First run: no prior version existed, so there is nothing to restore and
     # the broken file must simply go.
+    #
+    # Fix round 1, CRITICAL 2: added the third guard, `_sshd_drop_in is not
+    # failed`. Without it, this task also fired when the TEMPLATE task itself
+    # failed (validate rejected the rendered fragment) -- in that case the
+    # module never writes dest, so backup_file is never set even though a
+    # perfectly good drop-in from a previous run is sitting at dest. The old
+    # condition would then DELETE that working file and fall through to the
+    # reload below, which restarts sshd on distro defaults (port 22 only) --
+    # a permanent lockout for anyone who blocked 22 at the cloud firewall, as
+    # this plan itself recommends. With the guard: when the template task
+    # failed, backup_file is unset AND the result is failed, so this branch
+    # is skipped, the untouched existing file is left exactly as it was, and
+    # the reload below just reloads the config that was already active and
+    # already known-good. Traced all three cases in the fix report.
     - name: Removing the failed drop-in when no previous version existed
       become: yes
       file:
@@ -81,6 +179,7 @@
       when:
         - _sshd_drop_in is defined
         - _sshd_drop_in.backup_file is not defined
+        - _sshd_drop_in is not failed
 
     - name: Reloading sshd with the restored configuration
       become: yes
@@ -91,6 +190,7 @@
     - name: Failing loudly
       fail:
         msg: >-
-          SSH hardening failed verification and was rolled back. The host is
-          reachable on port 22. Check AllowUsers and AuthenticationMethods in
-          roles/setup/templates/10-hardening.conf.j2 before retrying.
+          SSH hardening failed verification and was rolled back. The host
+          should be reachable on the pre-hardening port. Check AllowUsers and
+          AuthenticationMethods in roles/setup/templates/10-hardening.conf.j2
+          before retrying.
