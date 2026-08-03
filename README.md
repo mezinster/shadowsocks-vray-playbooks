@@ -140,7 +140,7 @@ pip install -r requirements.txt
 
 **Добавьте соответствующий `ansible_port` в `inventories/hosts.ini`:**
 
-    server ansible_host=yourserver.com ansible_port=52200
+    server ansible_host=yourserver.com ansible_port=2222
 
 Без этого все команды `make` перестанут подключаться к серверу, как только
 старый порт будет закрыт на фаерволе облачного провайдера.

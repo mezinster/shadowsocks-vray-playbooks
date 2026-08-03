@@ -252,9 +252,9 @@ LOCKOUT
   PASS   rendered sshd config valid            sshd -t exit 0
   PASS   user 'ubuntu' survives AllowUsers     AllowUsers ubuntu
   PASS   authorized_keys intact                1 key, sha256 unchanged
-  PASS   port 52200 free                       bound by sshd only
+  PASS   port <ssh-port> free                       bound by sshd only
   PASS   port 22 remains bound                 break-glass preserved
-  UNKNOWN cloud firewall allows 52200          CANNOT VERIFY — check Lightsail
+  UNKNOWN cloud firewall allows <ssh-port>          CANNOT VERIFY — check Lightsail
 
 PROXY
   PASS   containers running                    nginx, shadowsocks, certbot

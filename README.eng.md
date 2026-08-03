@@ -132,7 +132,7 @@ before hardening was added does not need to be edited to keep working.
 
 **Add a matching `ansible_port` to `inventories/hosts.ini`:**
 
-    server ansible_host=yourserver.com ansible_port=52200
+    server ansible_host=yourserver.com ansible_port=2222
 
 Without it, every `make` target stops connecting the moment the old port is
 closed at your cloud firewall.
