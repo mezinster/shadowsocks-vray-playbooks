@@ -88,13 +88,17 @@
   set_fact:
     whatif_results: "{{ whatif_results + [{
         'group': 'LOCKOUT',
-        'status': _wi_port_ok | ternary('PASS', 'FAIL'),
+        'status': _wi_port_status,
         'name': 'target ssh port is free or already sshd',
-        'detail': _wi_port_ok | ternary('port ' ~ ssh_port ~ ' free or held by sshd',
-                                        'port ' ~ ssh_port ~ ' held by another process') }] }}"
+        'detail': _wi_port_detail }] }}"
   vars:
     _wi_port_lines: "{{ _wi_ss.stdout_lines | select('search', ':' ~ ssh_port ~ ' ') | list }}"
     _wi_port_ok: "{{ (_wi_port_lines | length == 0) or (_wi_port_lines | select('search', 'sshd') | list | length == _wi_port_lines | length) }}"
+    _wi_port_status: "{{ 'UNKNOWN' if _wi_ss.rc != 0 else (_wi_port_ok | ternary('PASS', 'FAIL')) }}"
+    _wi_port_detail: >-
+      {{ 'could not determine: ss failed (rc ' ~ _wi_ss.rc ~ ')' if _wi_ss.rc != 0 else
+         (_wi_port_ok | ternary('port ' ~ ssh_port ~ ' free or held by sshd',
+                                 'port ' ~ ssh_port ~ ' held by another process')) }}
 
 - name: Recording the break-glass result
   set_fact:

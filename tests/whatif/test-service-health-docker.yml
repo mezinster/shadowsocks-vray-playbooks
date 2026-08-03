@@ -47,8 +47,13 @@
     - name: Resetting shared state this task file depends on
       set_fact:
         whatif_results: []
+        # rc: 0 so the plugin-binding check's own UNKNOWN-on-broken-ss branch
+        # (see test-ss-rc.yml) is not what's exercised here -- this file is
+        # only about the docker ps rc, and an rc-less stub would now hit that
+        # other branch since service_health.yml reads _wi_ss.rc too.
         _wi_ss:
           stdout_lines: []
+          rc: 0
 
     - include_tasks: ../../deploy/roles/whatif/tasks/connection.yml
     - include_tasks: ../../deploy/roles/whatif/tasks/service_health.yml
@@ -99,8 +104,13 @@
     - name: Resetting shared state this task file depends on
       set_fact:
         whatif_results: []
+        # rc: 0 so the plugin-binding check's own UNKNOWN-on-broken-ss branch
+        # (see test-ss-rc.yml) is not what's exercised here -- this file is
+        # only about the docker ps rc, and an rc-less stub would now hit that
+        # other branch since service_health.yml reads _wi_ss.rc too.
         _wi_ss:
           stdout_lines: []
+          rc: 0
 
     - include_tasks: ../../deploy/roles/whatif/tasks/connection.yml
     - include_tasks: ../../deploy/roles/whatif/tasks/service_health.yml

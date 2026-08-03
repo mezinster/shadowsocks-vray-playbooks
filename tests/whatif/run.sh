@@ -65,6 +65,13 @@ else
   echo "FAIL: docker-unreachable case misclassified, or the genuine-FAIL case regressed"; tail -30 /tmp/wi-docker.log; rc=1
 fi
 
+echo "--- Important 3: ss failing (rc != 0) must report UNKNOWN, not PASS/FAIL, on both consumers; a working ss must still PASS/FAIL correctly ---"
+if $PLAYBOOK -i localhost, tests/whatif/test-ss-rc.yml -e "ansible_become=false" >/tmp/wi-ss-rc.log 2>&1; then
+  echo "PASS: broken ss -> UNKNOWN on both checks, and a working ss still PASSes/FAILs correctly"
+else
+  echo "FAIL: ss-rc handling misclassified at least one case"; tail -30 /tmp/wi-ss-rc.log; rc=1
+fi
+
 echo "--- drift normalisation ---"
 if $PLAYBOOK -i localhost, tests/whatif/test-normalise.yml >/tmp/wi-norm.log 2>&1; then
   echo "PASS: normalisation distinguishes cosmetic from functional"

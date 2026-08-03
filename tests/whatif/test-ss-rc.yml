@@ -1,0 +1,262 @@
+# Important 3 regression: `failed_when: false` was added to the `ss -tlpnH`
+# task in ssh_safety.yml so a broken/missing `ss` degrades the preflight
+# instead of aborting it -- correct, since the LOCKOUT group exists to stop
+# a preflight run, not to be aborted by one. But its two consumers never
+# looked at _wi_ss.rc: they read _wi_ss.stdout_lines directly. An `ss` that
+# fails yields an empty stdout_lines, and the OLD code read that identically
+# to "ss ran and found nothing on that port":
+#
+#   - ssh_safety.yml's "target ssh port is free or already sshd" check (the
+#     LOCKOUT group -- the checks that exist to stop an operator locking
+#     themselves out) reported PASS having verified nothing.
+#   - service_health.yml's "v2ray-plugin is loopback-only" check (PROXY
+#     group) reported a false FAIL in the safer direction.
+#
+# Both should report UNKNOWN: the check could not be performed, which is a
+# different fact than either a pass or a genuine finding.
+#
+# This shims `ss` on PATH the same way test-service-health-docker.yml shims
+# `docker` -- a real executable the actual "Listing listening TCP ports"
+# task in ssh_safety.yml invokes, not a synthetic stand-in for the Jinja
+# logic. _wi_ss is registered once in ssh_safety.yml and reused by
+# service_health.yml (same as a real run via main.yml), so both consumers
+# are exercised off a single `ss` invocation per play, exactly as in
+# production.
+#
+# Three plays:
+#   1. ss exits non-zero -> both checks must report UNKNOWN, never PASS/FAIL.
+#   2. a working ss reporting the target port held by sshd and 9000
+#      loopback-only -> both checks must still PASS. Proves the fix did not
+#      tip everything into permanent UNKNOWN.
+#   3. a working ss reporting the target port held by something else and
+#      9000 bound to all interfaces -> both checks must still FAIL. Proves
+#      genuine findings still surface.
+#
+# ssh_port comes from roles/setup/defaults/main.yml (loaded the same way
+# deploy/whatif.yml loads it, see test-defaults.yml) rather than being
+# hard-coded here, so this test tracks the real default instead of drifting
+# from it. That default is 22.
+
+- name: A failing ss must report UNKNOWN, not PASS/FAIL, on either consumer
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  vars:
+    host: example.com
+    endpoint: ss
+    whatif_cert_min_days: 14
+  vars_files:
+    - ../../deploy/roles/setup/defaults/main.yml
+  environment:
+    PATH: "/tmp/wi-fake-ss-bin/broken:{{ ansible_env.PATH }}"
+  tasks:
+    - name: Creating the fake-ss directory
+      file:
+        path: /tmp/wi-fake-ss-bin/broken
+        state: directory
+        mode: '0755'
+
+    - name: Creating a fake ss that fails as a missing/broken ss would
+      copy:
+        dest: /tmp/wi-fake-ss-bin/broken/ss
+        mode: '0755'
+        content: |
+          #!/bin/sh
+          echo "ss: not found" >&2
+          exit 127
+
+    - name: Starting with an empty result set, as main.yml does
+      set_fact:
+        whatif_results: []
+
+    - name: Creating a working directory, as main.yml does
+      tempfile:
+        state: directory
+        suffix: whatif
+      register: _wi_tmp
+
+    - include_tasks: ../../deploy/roles/whatif/tasks/connection.yml
+
+    - name: Running the real ssh_safety.yml task chain with a broken ss on PATH
+      include_tasks: ../../deploy/roles/whatif/tasks/ssh_safety.yml
+
+    - name: Running the real service_health.yml task chain, consuming the same _wi_ss
+      include_tasks: ../../deploy/roles/whatif/tasks/service_health.yml
+
+    - name: Asserting the port-free check reports UNKNOWN, not PASS
+      assert:
+        that:
+          - _wi_port_result.status == 'UNKNOWN'
+        fail_msg: >-
+          expected UNKNOWN when ss fails, got:
+          {{ _wi_port_result | default('no result recorded') }}
+      vars:
+        _wi_port_result: "{{ (whatif_results | selectattr('group', 'equalto', 'LOCKOUT') | selectattr('name', 'equalto', 'target ssh port is free or already sshd') | list | first) | default({}) }}"
+
+    - name: Asserting the loopback-only check reports UNKNOWN, not FAIL
+      assert:
+        that:
+          - _wi_9000_result.status == 'UNKNOWN'
+        fail_msg: >-
+          expected UNKNOWN when ss fails, got:
+          {{ _wi_9000_result | default('no result recorded') }}
+      vars:
+        _wi_9000_result: "{{ (whatif_results | selectattr('group', 'equalto', 'PROXY') | selectattr('name', 'equalto', 'v2ray-plugin is loopback-only') | list | first) | default({}) }}"
+
+    - name: Cleaning up the working directory and fake ss
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ _wi_tmp.path }}"
+        - /tmp/wi-fake-ss-bin
+
+- name: A working ss reporting a healthy target must still PASS both checks
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  vars:
+    host: example.com
+    endpoint: ss
+    whatif_cert_min_days: 14
+  vars_files:
+    - ../../deploy/roles/setup/defaults/main.yml
+  environment:
+    PATH: "/tmp/wi-fake-ss-bin/healthy:{{ ansible_env.PATH }}"
+  tasks:
+    - name: Creating the fake-ss directory
+      file:
+        path: /tmp/wi-fake-ss-bin/healthy
+        state: directory
+        mode: '0755'
+
+    - name: Creating a fake ss reporting the target port held by sshd and 9000 loopback-only
+      copy:
+        dest: /tmp/wi-fake-ss-bin/healthy/ss
+        mode: '0755'
+        content: |
+          #!/bin/sh
+          echo 'LISTEN 0 128   0.0.0.0:22        0.0.0.0:*    users:(("sshd",pid=111,fd=3))'
+          echo 'LISTEN 0 511 127.0.0.1:9000       0.0.0.0:*    users:(("v2ray-plugin",pid=222,fd=6))'
+          exit 0
+
+    - name: Starting with an empty result set, as main.yml does
+      set_fact:
+        whatif_results: []
+
+    - name: Creating a working directory, as main.yml does
+      tempfile:
+        state: directory
+        suffix: whatif
+      register: _wi_tmp
+
+    - include_tasks: ../../deploy/roles/whatif/tasks/connection.yml
+
+    - name: Running the real ssh_safety.yml task chain with a healthy ss on PATH
+      include_tasks: ../../deploy/roles/whatif/tasks/ssh_safety.yml
+
+    - name: Running the real service_health.yml task chain, consuming the same _wi_ss
+      include_tasks: ../../deploy/roles/whatif/tasks/service_health.yml
+
+    - name: Asserting the port-free check still PASSes when ss actually ran
+      assert:
+        that:
+          - _wi_port_result.status == 'PASS'
+        fail_msg: >-
+          expected PASS with a working ss showing port 22 held by sshd, got:
+          {{ _wi_port_result | default('no result recorded') }}
+      vars:
+        _wi_port_result: "{{ (whatif_results | selectattr('group', 'equalto', 'LOCKOUT') | selectattr('name', 'equalto', 'target ssh port is free or already sshd') | list | first) | default({}) }}"
+
+    - name: Asserting the loopback-only check still PASSes when ss actually ran
+      assert:
+        that:
+          - _wi_9000_result.status == 'PASS'
+        fail_msg: >-
+          expected PASS with a working ss showing 9000 on 127.0.0.1 only, got:
+          {{ _wi_9000_result | default('no result recorded') }}
+      vars:
+        _wi_9000_result: "{{ (whatif_results | selectattr('group', 'equalto', 'PROXY') | selectattr('name', 'equalto', 'v2ray-plugin is loopback-only') | list | first) | default({}) }}"
+
+    - name: Cleaning up the working directory and fake ss
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ _wi_tmp.path }}"
+        - /tmp/wi-fake-ss-bin
+
+- name: A working ss reporting genuine problems must still FAIL both checks
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  vars:
+    host: example.com
+    endpoint: ss
+    whatif_cert_min_days: 14
+  vars_files:
+    - ../../deploy/roles/setup/defaults/main.yml
+  environment:
+    PATH: "/tmp/wi-fake-ss-bin/unhealthy:{{ ansible_env.PATH }}"
+  tasks:
+    - name: Creating the fake-ss directory
+      file:
+        path: /tmp/wi-fake-ss-bin/unhealthy
+        state: directory
+        mode: '0755'
+
+    - name: Creating a fake ss reporting the target port held by another process and 9000 on all interfaces
+      copy:
+        dest: /tmp/wi-fake-ss-bin/unhealthy/ss
+        mode: '0755'
+        content: |
+          #!/bin/sh
+          echo 'LISTEN 0 128   0.0.0.0:22        0.0.0.0:*    users:(("nginx",pid=111,fd=3))'
+          echo 'LISTEN 0 511   0.0.0.0:9000       0.0.0.0:*    users:(("v2ray-plugin",pid=222,fd=6))'
+          exit 0
+
+    - name: Starting with an empty result set, as main.yml does
+      set_fact:
+        whatif_results: []
+
+    - name: Creating a working directory, as main.yml does
+      tempfile:
+        state: directory
+        suffix: whatif
+      register: _wi_tmp
+
+    - include_tasks: ../../deploy/roles/whatif/tasks/connection.yml
+
+    - name: Running the real ssh_safety.yml task chain with an unhealthy ss on PATH
+      include_tasks: ../../deploy/roles/whatif/tasks/ssh_safety.yml
+
+    - name: Running the real service_health.yml task chain, consuming the same _wi_ss
+      include_tasks: ../../deploy/roles/whatif/tasks/service_health.yml
+
+    - name: Asserting the port-free check still FAILs when ss shows another process on the port
+      assert:
+        that:
+          - _wi_port_result.status == 'FAIL'
+        fail_msg: >-
+          expected FAIL with a working ss showing port 22 held by nginx, got:
+          {{ _wi_port_result | default('no result recorded') }}
+      vars:
+        _wi_port_result: "{{ (whatif_results | selectattr('group', 'equalto', 'LOCKOUT') | selectattr('name', 'equalto', 'target ssh port is free or already sshd') | list | first) | default({}) }}"
+
+    - name: Asserting the loopback-only check still FAILs when ss shows 9000 on all interfaces
+      assert:
+        that:
+          - _wi_9000_result.status == 'FAIL'
+        fail_msg: >-
+          expected FAIL with a working ss showing 9000 on 0.0.0.0, got:
+          {{ _wi_9000_result | default('no result recorded') }}
+      vars:
+        _wi_9000_result: "{{ (whatif_results | selectattr('group', 'equalto', 'PROXY') | selectattr('name', 'equalto', 'v2ray-plugin is loopback-only') | list | first) | default({}) }}"
+
+    - name: Cleaning up the working directory and fake ss
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ _wi_tmp.path }}"
+        - /tmp/wi-fake-ss-bin

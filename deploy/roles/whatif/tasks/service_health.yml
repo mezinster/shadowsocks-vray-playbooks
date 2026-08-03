@@ -45,12 +45,16 @@
   set_fact:
     whatif_results: "{{ whatif_results + [{
         'group': 'PROXY',
-        'status': _wi_9000_ok | ternary('PASS', 'FAIL'),
+        'status': _wi_9000_status,
         'name': 'v2ray-plugin is loopback-only',
-        'detail': _wi_9000_ok | ternary('127.0.0.1:9000', 'port 9000 is NOT loopback-only') }] }}"
+        'detail': _wi_9000_detail }] }}"
   vars:
     _wi_9000: "{{ _wi_ss.stdout_lines | select('search', ':9000 ') | list }}"
     _wi_9000_ok: "{{ (_wi_9000 | length > 0) and (_wi_9000 | select('search', '127.0.0.1:9000') | list | length == _wi_9000 | length) }}"
+    _wi_9000_status: "{{ 'UNKNOWN' if _wi_ss.rc != 0 else (_wi_9000_ok | ternary('PASS', 'FAIL')) }}"
+    _wi_9000_detail: >-
+      {{ 'could not determine: ss failed (rc ' ~ _wi_ss.rc ~ ')' if _wi_ss.rc != 0 else
+         (_wi_9000_ok | ternary('127.0.0.1:9000', 'port 9000 is NOT loopback-only')) }}
 
 - name: Reading the certificate expiry date
   become: yes
