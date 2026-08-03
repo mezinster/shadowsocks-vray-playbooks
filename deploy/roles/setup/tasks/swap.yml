@@ -6,7 +6,6 @@
       command: swapon --show --noheadings
       register: _swap_show
       changed_when: false
-      failed_when: false
 
     - name: Creating the swap file
       when: _swap_show.stdout | trim == ""
@@ -37,6 +36,7 @@
       become: yes
       lineinfile:
         path: /etc/fstab
+        regexp: '^\s*/swapfile\s+'
         line: "/swapfile none swap sw 0 0"
         state: present
 
