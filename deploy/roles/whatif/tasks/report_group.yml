@@ -1,0 +1,12 @@
+# Emits one section of the report. Included once per group by report.yml.
+- name: Adding the group header
+  set_fact:
+    _wi_lines: "{{ _wi_lines | default([]) + [''] + [group_name] }}"
+  when: whatif_results | selectattr('group', 'equalto', group_name) | list | length > 0
+
+- name: Adding the group's result lines
+  set_fact:
+    _wi_lines: "{{ _wi_lines + ['  ' ~ '%-8s %-38s %s' | format(item.status, item.name, item.detail)] }}"
+  loop: "{{ whatif_results | selectattr('group', 'equalto', group_name) | list }}"
+  loop_control:
+    label: "{{ item.name }}"

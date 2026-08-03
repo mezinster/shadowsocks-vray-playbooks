@@ -1,0 +1,25 @@
+# Read-only preflight. Writes ONLY under a temp directory, removed in always:.
+# No task here uses notify:, and this role registers no handlers.
+- name: Running the preflight
+  block:
+    - name: Creating a working directory for rendered artefacts
+      tempfile:
+        state: directory
+        suffix: whatif
+      register: _wi_tmp
+      changed_when: false
+
+    - name: Starting with an empty result set
+      set_fact:
+        whatif_results: []
+
+    - name: Reporting
+      include_tasks: report.yml
+
+  always:
+    - name: Removing the working directory
+      file:
+        path: "{{ _wi_tmp.path }}"
+        state: absent
+      when: _wi_tmp.path is defined
+      changed_when: false

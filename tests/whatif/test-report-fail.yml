@@ -1,0 +1,12 @@
+# Report engine: a single FAIL must fail the play with a non-zero exit.
+- name: Report engine — one failure
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    whatif_results:
+      - { group: 'LOCKOUT',   status: 'PASS', name: 'rendered sshd config valid', detail: 'sshd -t exit 0' }
+      - { group: 'LOCKOUT',   status: 'FAIL', name: "user survives AllowUsers",   detail: "AllowUsers=nosuchuser, connected as ubuntu" }
+      - { group: 'INTEGRITY', status: 'PASS', name: 'no file modified',           detail: '6 checksums unchanged' }
+  tasks:
+    - include_tasks: ../../deploy/roles/whatif/tasks/report.yml

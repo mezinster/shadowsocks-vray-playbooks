@@ -19,4 +19,15 @@ prepare_ssh:
 	ansible-playbook -i inventories/hosts.ini --extra-vars "@variables.yml"  deploy/client.yml --tags prepare_ssh   
 
 deploy_client:
-	ansible-playbook -i inventories/hosts.ini --extra-vars "@variables.yml"  deploy/client.yml   
+	ansible-playbook -i inventories/hosts.ini --extra-vars "@variables.yml"  deploy/client.yml
+
+whatif:
+	ansible-playbook -i inventories/hosts.ini --extra-vars "@variables.yml"  deploy/whatif.yml
+
+whatif_deep:
+	ansible-playbook -i inventories/hosts.ini --extra-vars "@variables.yml"  deploy/whatif.yml -e whatif_shadow_sshd=yes
+
+# The other half — the REAL setup playbook in honest check mode. Produces an
+# Ansible diff, not the preflight report. See Task 7.
+whatif_preview:
+	ansible-playbook -i inventories/hosts.ini --extra-vars "@variables.yml"  deploy/setup.yml --check --diff

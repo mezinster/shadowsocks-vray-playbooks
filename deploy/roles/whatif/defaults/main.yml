@@ -1,0 +1,4 @@
+# Opt-in: start a shadow sshd and authenticate against it for real (see Task 6).
+whatif_shadow_sshd: no
+# Fail the certificate check below this many days remaining.
+whatif_cert_min_days: 14
