@@ -1,0 +1,51 @@
+- name: Configuring swap
+  when: swap_size_mb | int > 0
+  block:
+    - name: Checking for active swap
+      become: yes
+      command: swapon --show --noheadings
+      register: _swap_show
+      changed_when: false
+      failed_when: false
+
+    - name: Creating the swap file
+      when: _swap_show.stdout | trim == ""
+      block:
+        - name: Allocating the swap file
+          become: yes
+          command: "fallocate -l {{ swap_size_mb }}M /swapfile"
+          args:
+            creates: /swapfile
+
+        - name: Restricting swap file permissions
+          become: yes
+          file:
+            path: /swapfile
+            owner: root
+            group: root
+            mode: '0600'
+
+        - name: Formatting the swap file
+          become: yes
+          command: mkswap /swapfile
+
+        - name: Enabling swap
+          become: yes
+          command: swapon /swapfile
+
+    - name: Persisting swap across reboots
+      become: yes
+      lineinfile:
+        path: /etc/fstab
+        line: "/swapfile none swap sw 0 0"
+        state: present
+
+    - name: Lowering swappiness for a small proxy host
+      become: yes
+      copy:
+        dest: /etc/sysctl.d/99-swappiness.conf
+        content: "vm.swappiness=10\n"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: apply sysctl

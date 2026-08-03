@@ -13,3 +13,6 @@
 - name: Installing fail2ban
   import_tasks: fail2ban.yml
 
+- name: Configuring swap
+  import_tasks: swap.yml
+
