@@ -12,11 +12,20 @@
   register: _wi_before
   changed_when: false
 
-# Flatten to {path: checksum} so the after-comparison is a plain dict diff.
-# A missing file is recorded as 'ABSENT' — its later appearance is a change.
-- name: Reducing the snapshot to a path/checksum map
+# Flatten to {path: state} so the after-comparison is a plain dict diff.
+# Three states are distinguished, not two:
+#   - file does not exist            -> 'ABSENT'
+#   - file exists, checksum readable -> the checksum
+#   - file exists but unreadable     -> 'UNREADABLE' (stat succeeded but
+#     get_checksum produced no checksum, e.g. permission denied). This must
+#     NOT collapse into 'ABSENT': two unreadable snapshots would both read
+#     'ABSENT', compare equal, and let the guard report PASS having verified
+#     nothing about that file.
+- name: Reducing the snapshot to a path/state map
   set_fact:
-    _wi_before_map: "{{ _wi_before_map | default({}) | combine({ item.item: (item.stat.checksum | default('ABSENT')) }) }}"
+    _wi_before_map: "{{ _wi_before_map | default({}) | combine({ item.item: _wi_state }) }}"
   loop: "{{ _wi_before.results }}"
   loop_control:
     label: "{{ item.item }}"
+  vars:
+    _wi_state: "{{ (not item.stat.exists) | ternary('ABSENT', (item.stat.checksum is defined) | ternary(item.stat.checksum, 'UNREADABLE')) }}"
