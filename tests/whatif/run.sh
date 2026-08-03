@@ -44,4 +44,11 @@ else
 fi
 rm -f /tmp/wi-probe-*.txt
 
+echo "--- drift normalisation ---"
+if $PLAYBOOK -i localhost, tests/whatif/test-normalise.yml >/tmp/wi-norm.log 2>&1; then
+  echo "PASS: normalisation distinguishes cosmetic from functional"
+else
+  echo "FAIL: normalisation is wrong"; tail -20 /tmp/wi-norm.log; rc=1
+fi
+
 exit $rc

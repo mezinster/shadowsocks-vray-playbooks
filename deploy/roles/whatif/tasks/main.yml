@@ -25,6 +25,9 @@
     - name: Checking proxy service health
       include_tasks: service_health.yml
 
+    - name: Checking for drift between the templates and the live files
+      include_tasks: drift.yml
+
     - name: Verifying guarded files were not modified by this preflight
       include_tasks: integrity_after.yml
 
