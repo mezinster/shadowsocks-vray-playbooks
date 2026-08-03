@@ -1,0 +1,15 @@
+- name: reload sshd
+  become: yes
+  service:
+    name: ssh
+    state: reloaded
+
+- name: restart fail2ban
+  become: yes
+  service:
+    name: fail2ban
+    state: restarted
+
+- name: apply sysctl
+  become: yes
+  command: sysctl --system

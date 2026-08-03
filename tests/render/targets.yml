@@ -1,3 +1,4 @@
 render_targets:
   - { src: "../../deploy/roles/server/templates/shadowsocks-config.j2", name: "shadowsocks-config.json" }
   - { src: "../../deploy/roles/server/templates/nginx-release.j2",      name: "nginx-release.conf" }
+  - { src: "../../deploy/roles/setup/templates/10-hardening.conf.j2", name: "10-hardening.conf" }

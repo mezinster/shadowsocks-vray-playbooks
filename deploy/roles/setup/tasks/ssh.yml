@@ -1,0 +1,96 @@
+- name: Refusing an unrecoverable SSH configuration
+  assert:
+    that:
+      - (not harden_ssh | bool)
+        or (ssh_keep_port_22 | bool)
+        or (ssh_accept_lockout_risk | default(false) | bool)
+    fail_msg: >-
+      harden_ssh with ssh_keep_port_22=no removes the rollback path: the rescue
+      block below would have no route back to the host. Set
+      ssh_accept_lockout_risk=yes to override deliberately.
+
+- name: Hardening sshd
+  when: harden_ssh | bool
+  block:
+    - name: Deploying sshd hardening drop-in
+      become: yes
+      template:
+        src: 10-hardening.conf.j2
+        dest: /etc/ssh/sshd_config.d/10-hardening.conf
+        owner: root
+        group: root
+        mode: '0644'
+        backup: yes
+        # Validates this fragment's syntax in isolation, using built-in
+        # defaults for anything unspecified.  Does not catch conflicts with
+        # the main config -- the next task does that.
+        validate: '/usr/sbin/sshd -t -f %s'
+      register: _sshd_drop_in
+      notify: reload sshd
+
+    - name: Validating the assembled sshd configuration
+      become: yes
+      command: /usr/sbin/sshd -t
+      changed_when: false
+
+    - name: Reloading sshd before verifying it
+      meta: flush_handlers
+
+    - name: Dropping the old connection
+      meta: reset_connection
+
+    - name: Switching to the new SSH port
+      set_fact:
+        ansible_port: "{{ ssh_port }}"
+
+    # A real authentication over the new port.  wait_for would only prove a
+    # TCP socket is open -- an sshd that accepts connections and rejects every
+    # key would pass it.  This re-authenticates through Ansible's own SSH
+    # transport, so a semantic lockout (wrong AllowUsers, AuthenticationMethods
+    # excluding the key) fails the play instead of passing it.
+    - name: Verifying authentication over the new port
+      ping:
+
+  rescue:
+    # Hardcoded 22, not a variable: the assert above guarantees 22 is bound
+    # whenever this path is reachable without an explicit override.
+    - name: Falling back to port 22
+      set_fact:
+        ansible_port: 22
+
+    - name: Dropping the failed connection
+      meta: reset_connection
+
+    - name: Restoring the previous sshd drop-in
+      become: yes
+      copy:
+        src: "{{ _sshd_drop_in.backup_file }}"
+        dest: /etc/ssh/sshd_config.d/10-hardening.conf
+        remote_src: yes
+      when:
+        - _sshd_drop_in is defined
+        - _sshd_drop_in.backup_file is defined
+
+    # First run: no prior version existed, so there is nothing to restore and
+    # the broken file must simply go.
+    - name: Removing the failed drop-in when no previous version existed
+      become: yes
+      file:
+        path: /etc/ssh/sshd_config.d/10-hardening.conf
+        state: absent
+      when:
+        - _sshd_drop_in is defined
+        - _sshd_drop_in.backup_file is not defined
+
+    - name: Reloading sshd with the restored configuration
+      become: yes
+      service:
+        name: ssh
+        state: reloaded
+
+    - name: Failing loudly
+      fail:
+        msg: >-
+          SSH hardening failed verification and was rolled back. The host is
+          reachable on port 22. Check AllowUsers and AuthenticationMethods in
+          roles/setup/templates/10-hardening.conf.j2 before retrying.
