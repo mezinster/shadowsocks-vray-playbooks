@@ -1,0 +1,95 @@
+# Empirical proof that the rendered config admits this user by public key.
+# Starts a SECOND sshd on loopback only; never signals the running one.
+#
+# PASS is only ever produced by rc == 0 from the final `ssh` command below.
+# Every other outcome — keygen failure, sshd failing to start, the shadow
+# port already being taken — resolves to FAIL or UNKNOWN, never PASS.
+- name: Shadow sshd authentication test
+  when: whatif_shadow_sshd | bool
+  vars:
+    _wi_shadow_port: 61022
+  block:
+    - name: Listing listening TCP ports for the shadow port check
+      command: ss -tlnH
+      register: _wi_shadow_ss
+      changed_when: false
+
+    - name: Determining whether the shadow port is already in use
+      set_fact:
+        _wi_shadow_port_busy: "{{ (_wi_shadow_ss.stdout_lines | select('search', ':' ~ _wi_shadow_port ~ ' ') | list | length) > 0 }}"
+
+    - name: Recording UNKNOWN because the shadow port is occupied
+      set_fact:
+        whatif_results: "{{ whatif_results + [{
+            'group': 'LOCKOUT',
+            'status': 'UNKNOWN',
+            'name': 'rendered config admits user by public key',
+            'detail': 'shadow port ' ~ _wi_shadow_port ~ ' already in use — test not run' }] }}"
+      when: _wi_shadow_port_busy | bool
+
+    - name: Running the shadow-sshd probe
+      when: not (_wi_shadow_port_busy | bool)
+      block:
+        - name: Generating a throwaway keypair
+          command: "ssh-keygen -q -t ed25519 -N '' -f {{ _wi_tmp.path }}/probe_key"
+          register: _wi_shadow_keygen
+          failed_when: false
+          changed_when: false
+
+        - name: Building a temporary authorized_keys for the probe
+          copy:
+            src: "{{ _wi_tmp.path }}/probe_key.pub"
+            dest: "{{ _wi_tmp.path }}/probe_authorized_keys"
+            remote_src: yes
+            mode: '0600'
+          failed_when: false
+          changed_when: false
+
+        - name: Starting the shadow sshd on loopback
+          become: yes
+          shell: >-
+            /usr/sbin/sshd -f {{ _wi_tmp.path }}/10-hardening.conf
+            -o ListenAddress=127.0.0.1 -o Port={{ _wi_shadow_port }}
+            -o AuthorizedKeysFile={{ _wi_tmp.path }}/probe_authorized_keys
+            -o PidFile={{ _wi_tmp.path }}/shadow.pid
+            -o StrictModes=no
+            -E {{ _wi_tmp.path }}/shadow.log
+          register: _wi_shadow_start
+          failed_when: false
+          changed_when: false
+
+        - name: Authenticating against the shadow sshd
+          command: >-
+            ssh -p {{ _wi_shadow_port }} -i {{ _wi_tmp.path }}/probe_key
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+            -o BatchMode=yes -o ConnectTimeout=10
+            {{ _wi_user }}@127.0.0.1 true
+          register: _wi_shadow_auth
+          failed_when: false
+          changed_when: false
+
+        - name: Recording the shadow-auth result
+          set_fact:
+            whatif_results: "{{ whatif_results + [{
+                'group': 'LOCKOUT',
+                'status': _wi_shadow_pass | ternary('PASS', 'FAIL'),
+                'name': 'rendered config admits user by public key',
+                'detail': _wi_shadow_detail }] }}"
+          vars:
+            _wi_shadow_pass: "{{ (_wi_shadow_auth.rc | default(-1)) == 0 }}"
+            _wi_shadow_detail: >-
+              {{ _wi_shadow_pass | ternary(
+                   'shadow sshd authenticated ' ~ _wi_user,
+                   ((_wi_shadow_keygen.rc | default(-1)) != 0) | ternary(
+                     'ssh-keygen failed (rc ' ~ (_wi_shadow_keygen.rc | default('?')) ~ ')',
+                     ((_wi_shadow_start.rc | default(-1)) != 0) | ternary(
+                       'shadow sshd failed to start (rc ' ~ (_wi_shadow_start.rc | default('?')) ~ '): ' ~ (_wi_shadow_start.stderr | default('see ' ~ _wi_tmp.path ~ '/shadow.log') | truncate(160)),
+                       'shadow sshd REJECTED ' ~ _wi_user ~ ' (rc ' ~ (_wi_shadow_auth.rc | default('?')) ~ ')') ) ) }}
+
+  always:
+    - name: Stopping the shadow sshd
+      become: yes
+      shell: "kill $(cat {{ _wi_tmp.path }}/shadow.pid) 2>/dev/null || true"
+      failed_when: false
+      changed_when: false
+      when: whatif_shadow_sshd | bool

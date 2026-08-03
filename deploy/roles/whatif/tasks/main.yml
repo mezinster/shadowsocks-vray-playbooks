@@ -22,6 +22,9 @@
     - name: Checking SSH lockout safety
       include_tasks: ssh_safety.yml
 
+    - name: Running the opt-in shadow sshd authentication test
+      include_tasks: shadow_sshd.yml
+
     - name: Checking proxy service health
       include_tasks: service_health.yml
 
