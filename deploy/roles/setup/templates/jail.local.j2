@@ -12,7 +12,7 @@ banaction_allports = ufw
 
 [sshd]
 enabled  = true
-port     = {{ ssh_port }}{% if ssh_keep_port_22 and ssh_port != 22 %},22{% endif %}
+port     = {{ ssh_port }}{% if ssh_keep_port_22 and (ssh_port | int) != 22 %},22{% endif %}
 
 # backend/logpath pinned explicitly: persistent journald storage is not
 # configured on the Ubuntu cloud image, whereas /var/log/auth.log is populated.

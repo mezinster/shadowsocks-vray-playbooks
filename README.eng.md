@@ -82,6 +82,11 @@ pip install -r requirements.txt
 
 Use `source venv/bin/activate' to activate virtual environment before deployment
 
+Note: this repo ships its own `ansible.cfg`, and Ansible only ever loads the
+first config file it finds (it does not merge several) — so it completely
+shadows any personal `~/.ansible.cfg` you may have; copy over anything you
+rely on there into `./ansible.cfg`.
+
 
 # Server configuration <a id="server-setup"></a>
 
@@ -168,6 +173,19 @@ The `ufw` ban action blocks the offending address on **all ports**, including
 443. A host that fails SSH authentication will also lose the proxy. Unban with:
 
     sudo fail2ban-client set sshd unbanip <IP>
+
+### A re-run can ban yourself: `MaxAuthTries 3` + a loaded ssh-agent
+
+The hardening drop-in sets `MaxAuthTries 3`, and fail2ban's `ignoreip` only
+covers loopback. If your `ssh-agent` offers four or more keys, sshd can burn
+through the auth budget before your intended key is even tried — on a
+**re-run** of this playbook (the first run is safe, since fail2ban is
+installed only after ssh.yml). Once that happens, fail2ban's `ufw` banaction
+blocks you on all ports, proxy included, exactly as above. Add
+`IdentitiesOnly yes` to the relevant `Host` block in your `~/.ssh/config` so
+only the intended key is offered, and consider extending fail2ban's
+`ignoreip` (in `jail.local.j2` / `fail2ban_*` variables) with a trusted
+address you connect from. Recover with the same `unbanip` command above.
 
 # Deploy and tags <a id="deploy"></a>
 

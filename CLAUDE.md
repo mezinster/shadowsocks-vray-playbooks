@@ -47,6 +47,12 @@ python3.7 -m virtualenv venv --python 3.7
 pip install -r requirements.txt
 ```
 
+> **Note:** the repo's `./ansible.cfg` is loaded instead of `~/.ansible.cfg`
+> (Ansible uses only the first config file it finds; it does not merge them),
+> so any personal Ansible settings you keep in your home directory are
+> silently ignored while working in this repo — copy anything you rely on
+> into `./ansible.cfg`.
+
 ### Server Deployment
 ```bash
 # Initial server setup (installs Docker, opens ports 80/443)

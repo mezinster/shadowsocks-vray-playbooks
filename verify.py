@@ -21,7 +21,8 @@ VAULT_HEADER = "$ANSIBLE_VAULT;"
 # - .history: editor local history, not project data
 # - tests/render/out: golden-file test harness output (tests/run.sh), regenerated
 #   on every run — build output, not sensitive data
-SKIP_ENTRIES = {"venv", ".history", "tests/render/out"}
+# - __pycache__: compiled Python bytecode, not project data
+SKIP_ENTRIES = {"venv", ".history", "tests/render/out", "__pycache__"}
 
 PRE_COMMIT_HOOK = """\
 #!/bin/sh

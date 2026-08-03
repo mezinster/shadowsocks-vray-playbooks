@@ -212,7 +212,13 @@
         state: absent
       when:
         - _sshd_drop_in_stat is defined
-        - not _sshd_drop_in_stat.stat.exists
+        # default(true) is fail-safe: if the pre-run stat probe itself
+        # failed, _sshd_drop_in_stat has no `.stat` key at all, and treating
+        # that as "it existed" means this branch skips (does not delete)
+        # instead of erroring the rescue block with a missing-attribute
+        # exception, which would otherwise skip the reload/fail tasks below
+        # it and leave a confusing play failure with no explanation.
+        - not (_sshd_drop_in_stat.stat.exists | default(true))
         - _sshd_drop_in is defined
         - _sshd_drop_in is not failed
 

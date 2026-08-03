@@ -32,6 +32,18 @@
           become: yes
           command: swapon /swapfile
 
+    - name: Checking whether the swap file exists
+      become: yes
+      stat:
+        path: /swapfile
+      register: _swapfile_stat
+
+    # Gated on the file actually existing on disk (checked AFTER the creation
+    # block above), not on _swap_show: a host with other swap already active
+    # (a swap partition, zram) legitimately skips creation, and must NOT get
+    # an fstab entry for a /swapfile that was never made -- that produces a
+    # permanently-failing swapfile.swap unit on reboot. Checking .stat.exists
+    # instead keeps this idempotent on re-runs where /swapfile does exist.
     - name: Persisting swap across reboots
       become: yes
       lineinfile:
@@ -39,6 +51,7 @@
         regexp: '^\s*/swapfile\s+'
         line: "/swapfile none swap sw 0 0"
         state: present
+      when: _swapfile_stat.stat.exists
 
     - name: Lowering swappiness for a small proxy host
       become: yes
