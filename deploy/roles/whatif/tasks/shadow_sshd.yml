@@ -1,14 +1,31 @@
 # Empirical proof that the rendered config admits this user by public key.
 # Starts a SECOND sshd on loopback only; never signals the running one.
 #
+# The candidate drop-in FRAGMENT alone is not what a real sshd runs: the
+# live /etc/ssh/sshd_config Include's it, and directives that live only in
+# the main file (e.g. UsePAM yes on Debian/Ubuntu) still apply there. Testing
+# the fragment in isolation reports FAIL on a correctly hardened host,
+# because without PAM sshd does its own account check and refuses a
+# key-only, password-locked account that the real, assembled config would
+# happily accept. So this file assembles candidate-drop-in + real main
+# config (candidate FIRST, so its overrides win — sshd keeps the first value
+# seen for most keywords, which is exactly the precedence the real
+# `sshd_config.d/10-hardening.conf` filename prefix gives it) and tests
+# THAT assembled file — the same effective config the real sshd runs.
+#
 # PASS is only ever produced by rc == 0 from the final `ssh` command below.
-# Every other outcome — keygen failure, sshd failing to start, the shadow
-# port already being taken — resolves to FAIL or UNKNOWN, never PASS.
+# Every other outcome — assembly invalid, keygen failure, sshd failing to
+# start, the shadow port already being taken — resolves to FAIL or UNKNOWN,
+# never PASS.
 - name: Shadow sshd authentication test
   when: whatif_shadow_sshd | bool
   vars:
     _wi_shadow_port: 61022
   block:
+    - name: Marking that no shadow sshd start has been attempted yet
+      set_fact:
+        _wi_shadow_start_attempted: false
+
     - name: Listing listening TCP ports for the shadow port check
       command: ss -tlnH
       register: _wi_shadow_ss
@@ -30,11 +47,43 @@
     - name: Running the shadow-sshd probe
       when: not (_wi_shadow_port_busy | bool)
       block:
+        - name: Assembling the effective config (candidate drop-in first, then the real main config)
+          become: yes
+          shell: "cat {{ _wi_tmp.path }}/10-hardening.conf /etc/ssh/sshd_config > {{ _wi_tmp.path }}/assembled.conf"
+          register: _wi_shadow_assemble
+          failed_when: false
+          changed_when: false
+
+        - name: Making the assembled config readable for validation and sshd
+          become: yes
+          file:
+            path: "{{ _wi_tmp.path }}/assembled.conf"
+            mode: '0644'
+          failed_when: false
+          changed_when: false
+
+        - name: Validating the assembled config with sshd itself
+          become: yes
+          command: "/usr/sbin/sshd -t -f {{ _wi_tmp.path }}/assembled.conf"
+          register: _wi_shadow_assembled_t
+          failed_when: false
+          changed_when: false
+
+        - name: Recording assembly failure and stopping the probe here
+          set_fact:
+            whatif_results: "{{ whatif_results + [{
+                'group': 'LOCKOUT',
+                'status': 'FAIL',
+                'name': 'rendered config admits user by public key',
+                'detail': 'assembled config (drop-in + main sshd_config) failed sshd -t (rc ' ~ (_wi_shadow_assembled_t.rc | default('?')) ~ '): ' ~ (_wi_shadow_assembled_t.stderr | default(_wi_shadow_assemble.stderr | default('')) | truncate(160)) }] }}"
+          when: (_wi_shadow_assembled_t.rc | default(-1)) != 0
+
         - name: Generating a throwaway keypair
           command: "ssh-keygen -q -t ed25519 -N '' -f {{ _wi_tmp.path }}/probe_key"
           register: _wi_shadow_keygen
           failed_when: false
           changed_when: false
+          when: (_wi_shadow_assembled_t.rc | default(-1)) == 0
 
         - name: Building a temporary authorized_keys for the probe
           copy:
@@ -44,11 +93,17 @@
             mode: '0600'
           failed_when: false
           changed_when: false
+          when: (_wi_shadow_assembled_t.rc | default(-1)) == 0
 
-        - name: Starting the shadow sshd on loopback
+        - name: Marking a shadow sshd start as attempted (so cleanup runs)
+          set_fact:
+            _wi_shadow_start_attempted: true
+          when: (_wi_shadow_assembled_t.rc | default(-1)) == 0
+
+        - name: Starting the shadow sshd on loopback against the ASSEMBLED config
           become: yes
           shell: >-
-            /usr/sbin/sshd -f {{ _wi_tmp.path }}/10-hardening.conf
+            /usr/sbin/sshd -f {{ _wi_tmp.path }}/assembled.conf
             -o ListenAddress=127.0.0.1 -o Port={{ _wi_shadow_port }}
             -o AuthorizedKeysFile={{ _wi_tmp.path }}/probe_authorized_keys
             -o PidFile={{ _wi_tmp.path }}/shadow.pid
@@ -57,6 +112,7 @@
           register: _wi_shadow_start
           failed_when: false
           changed_when: false
+          when: (_wi_shadow_assembled_t.rc | default(-1)) == 0
 
         - name: Authenticating against the shadow sshd
           command: >-
@@ -67,6 +123,7 @@
           register: _wi_shadow_auth
           failed_when: false
           changed_when: false
+          when: (_wi_shadow_assembled_t.rc | default(-1)) == 0
 
         - name: Recording the shadow-auth result
           set_fact:
@@ -75,11 +132,12 @@
                 'status': _wi_shadow_pass | ternary('PASS', 'FAIL'),
                 'name': 'rendered config admits user by public key',
                 'detail': _wi_shadow_detail }] }}"
+          when: (_wi_shadow_assembled_t.rc | default(-1)) == 0
           vars:
             _wi_shadow_pass: "{{ (_wi_shadow_auth.rc | default(-1)) == 0 }}"
             _wi_shadow_detail: >-
               {{ _wi_shadow_pass | ternary(
-                   'shadow sshd authenticated ' ~ _wi_user,
+                   'shadow sshd authenticated ' ~ _wi_user ~ ' (assembled drop-in + main config)',
                    ((_wi_shadow_keygen.rc | default(-1)) != 0) | ternary(
                      'ssh-keygen failed (rc ' ~ (_wi_shadow_keygen.rc | default('?')) ~ ')',
                      ((_wi_shadow_start.rc | default(-1)) != 0) | ternary(
@@ -87,9 +145,45 @@
                        'shadow sshd REJECTED ' ~ _wi_user ~ ' (rc ' ~ (_wi_shadow_auth.rc | default('?')) ~ ')') ) ) }}
 
   always:
-    - name: Stopping the shadow sshd
+    # Defensive, idempotent, never fails the play. Two kill strategies so a
+    # missing/unwritten PID file cannot orphan the process, then the port is
+    # re-checked so cleanup is VERIFIED, not just attempted.
+    - name: Killing the shadow sshd by PID file
       become: yes
-      shell: "kill $(cat {{ _wi_tmp.path }}/shadow.pid) 2>/dev/null || true"
+      shell: "test -f {{ _wi_tmp.path }}/shadow.pid && kill $(cat {{ _wi_tmp.path }}/shadow.pid) 2>/dev/null; true"
       failed_when: false
       changed_when: false
-      when: whatif_shadow_sshd | bool
+      when: (whatif_shadow_sshd | bool) and (_wi_shadow_start_attempted | default(false))
+
+    - name: Giving the shadow sshd a moment to exit
+      command: sleep 1
+      changed_when: false
+      when: (whatif_shadow_sshd | bool) and (_wi_shadow_start_attempted | default(false))
+
+    - name: Killing any shadow sshd still bound to the shadow port (fallback)
+      become: yes
+      shell: >-
+        ss -tlpnH | grep ':{{ _wi_shadow_port }} ' | grep sshd
+        | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' | sort -u | xargs -r kill 2>/dev/null; true
+      failed_when: false
+      changed_when: false
+      when: (whatif_shadow_sshd | bool) and (_wi_shadow_start_attempted | default(false))
+
+    - name: Verifying the shadow port is free again after cleanup
+      command: ss -tlnH
+      register: _wi_shadow_cleanup_ss
+      changed_when: false
+      failed_when: false
+      when: (whatif_shadow_sshd | bool) and (_wi_shadow_start_attempted | default(false))
+
+    - name: Recording the cleanup-verification result
+      set_fact:
+        whatif_results: "{{ whatif_results + [{
+            'group': 'LOCKOUT',
+            'status': _wi_cleanup_ok | ternary('PASS', 'FAIL'),
+            'name': 'shadow sshd cleaned up',
+            'detail': _wi_cleanup_ok | ternary('shadow port ' ~ _wi_shadow_port ~ ' free after cleanup',
+                                                'shadow port ' ~ _wi_shadow_port ~ ' STILL BOUND after cleanup attempt — check for a leaked sshd process') }] }}"
+      when: (whatif_shadow_sshd | bool) and (_wi_shadow_start_attempted | default(false)) and (_wi_shadow_cleanup_ss is defined) and (_wi_shadow_cleanup_ss.stdout_lines is defined)
+      vars:
+        _wi_cleanup_ok: "{{ (_wi_shadow_cleanup_ss.stdout_lines | default([]) | select('search', ':' ~ _wi_shadow_port ~ ' ') | list | length) == 0 }}"
