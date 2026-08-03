@@ -4,6 +4,15 @@
   gather_facts: yes
   vars:
     ansible_python_interpreter: /usr/bin/python3
+  # roles/setup/defaults/main.yml is the lowest-precedence source for
+  # ssh_port / ssh_keep_port_22 / ssh_allow_users etc. -- loaded explicitly
+  # here because this playbook only pulls in the whatif role, which does not
+  # define them itself. Duplicating the values into whatif's own defaults
+  # would let the two drift, which is exactly the failure mode this branch
+  # exists to prevent. vars_files is still lower precedence than
+  # --extra-vars/variables.yml, so an operator's own values still win.
+  vars_files:
+    - roles/setup/defaults/main.yml
 
   roles:
     - role: whatif

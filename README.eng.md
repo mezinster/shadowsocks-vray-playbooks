@@ -189,7 +189,7 @@ address you connect from. Recover with the same `unbanip` command above.
 
 ### Preflight — before you harden a real host
 
-    make whatif          # read-only checks, exits non-zero on any problem
+    make whatif          # read-only checks, exits non-zero on any FAIL
     make whatif_deep     # also starts a shadow sshd and authenticates for real
     make whatif_preview  # the real setup.yml in --check --diff mode, shows a diff — not the preflight report
 
@@ -210,7 +210,17 @@ missing directives that live only in the main config (`UsePAM yes` on
 Debian/Ubuntu); without PAM, sshd does its own account check and refuses a
 key-only account with a locked password, which is the correct state for a
 hardened account. Testing the fragment alone therefore reports FAIL on a
-host that is already correctly hardened.
+host that is already correctly hardened. A successful probe authenticates
+through PAM for real, so `make whatif_deep` is not entirely inert: it
+additionally records a login in the host's auth accounting
+(`wtmp`/`lastlog`/`utmp`) — `make whatif` (without `_deep`) does not.
+
+If `make whatif_deep` is interrupted (Ctrl-C) mid-probe, `always:` cleanup
+does not run on SIGINT, so the shadow sshd on `127.0.0.1:61022` and its
+throwaway key in the temp dir can be left behind. Recover with:
+
+    sudo ss -tlpnH | grep :61022    # find the leaked shadow sshd's PID
+    sudo kill <pid>                 # then remove it
 
 `make whatif_preview` is a different command with different output: it runs
 the real `setup.yml` with `--check --diff` and shows Ansible's own diff of

@@ -1,0 +1,71 @@
+# Important 1 regression: deploy/whatif.yml loads only `role: whatif`, whose
+# own defaults/main.yml does not define ssh_port / ssh_keep_port_22 /
+# ssh_allow_users. roles/setup/defaults/main.yml exists precisely so an
+# operator who kept an OLD variables.yml (predating the hardening variables)
+# still works -- but it was never loaded here, so ssh_safety.yml's very
+# first task (the sshd drop-in template render, which references ssh_port
+# directly) died with AnsibleUndefinedVariable and produced zero report.
+#
+# The fix adds `vars_files: [roles/setup/defaults/main.yml]` to
+# deploy/whatif.yml. This test mimics that same vars_files load (same
+# target file, relative from a playbook one directory up from deploy/,
+# exactly mirroring deploy/whatif.yml's own path) and then runs the real
+# ssh_safety.yml task chain -- the same chain that used to crash -- with NO
+# ssh_port supplied by the caller, proving the setup-role defaults alone are
+# now enough to keep it alive.
+#
+# run.sh invokes this file twice: once with no extra-vars (so expected_ssh_port
+# stays at its own default of 22, matching roles/setup/defaults/main.yml's
+# ssh_port: 22) and once with `-e "ssh_port=2222 expected_ssh_port=2222"` (an
+# extra-var, exactly how a real variables.yml is supplied) to prove that a
+# real variables.yml value still wins over the vars_files-loaded default --
+# extra-vars outrank vars_files in Ansible's precedence order.
+- name: Preflight survives an old/no variables.yml, and a real one still overrides the setup-role defaults
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  vars:
+    host: example.com
+    endpoint: ss
+    expected_ssh_port: 22
+  vars_files:
+    - ../../deploy/roles/setup/defaults/main.yml
+  tasks:
+    - name: Asserting the resolved ssh_port matches what run.sh expects
+      assert:
+        that:
+          - (ssh_port | int) == (expected_ssh_port | int)
+        fail_msg: >-
+          ssh_port resolved to {{ ssh_port }}, expected {{ expected_ssh_port }} --
+          either roles/setup/defaults/main.yml was not loaded via vars_files,
+          or an extra-var failed to override it.
+
+    - name: Starting with an empty result set, as main.yml does
+      set_fact:
+        whatif_results: []
+
+    - name: Creating a working directory, as main.yml does
+      tempfile:
+        state: directory
+        suffix: whatif
+      register: _wi_tmp
+
+    - include_tasks: ../../deploy/roles/whatif/tasks/connection.yml
+
+    # This is the exact task chain the reviewer reproduced the crash with --
+    # its first task renders 10-hardening.conf.j2, which references ssh_port,
+    # ssh_keep_port_22 and ssh_allow_users directly.
+    - name: Running the real ssh_safety.yml task chain -- this used to crash here
+      include_tasks: ../../deploy/roles/whatif/tasks/ssh_safety.yml
+
+    - name: Asserting the checks actually ran and produced LOCKOUT results
+      assert:
+        that:
+          - whatif_results | selectattr('group', 'equalto', 'LOCKOUT') | list | length > 0
+        fail_msg: "ssh_safety.yml ran without crashing but produced no results -- something else is wrong"
+
+    - name: Cleaning up the working directory
+      file:
+        path: "{{ _wi_tmp.path }}"
+        state: absent
+      when: _wi_tmp.path is defined

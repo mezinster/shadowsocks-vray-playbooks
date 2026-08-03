@@ -29,6 +29,7 @@
     - name: Listing listening TCP ports for the shadow port check
       command: ss -tlnH
       register: _wi_shadow_ss
+      failed_when: false
       changed_when: false
 
     - name: Determining whether the shadow port is already in use

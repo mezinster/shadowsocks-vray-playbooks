@@ -44,6 +44,27 @@ else
 fi
 rm -f /tmp/wi-probe-*.txt
 
+echo "--- Important 1: preflight survives an old variables.yml missing ssh_port (defaults via vars_files) ---"
+if $PLAYBOOK -i localhost, tests/whatif/test-defaults.yml -e "ansible_become=false" >/tmp/wi-defaults.log 2>&1; then
+  echo "PASS: setup-role defaults loaded, ssh_safety.yml did not crash"
+else
+  echo "FAIL: ssh_safety.yml crashed or produced no results with ssh_port unset"; tail -30 /tmp/wi-defaults.log; rc=1
+fi
+
+echo "--- Important 1: a real variables.yml value still overrides the setup-role defaults ---"
+if $PLAYBOOK -i localhost, tests/whatif/test-defaults.yml -e "ansible_become=false ssh_port=2222 expected_ssh_port=2222" >/tmp/wi-defaults-override.log 2>&1; then
+  echo "PASS: ssh_port override took precedence over roles/setup/defaults/main.yml"
+else
+  echo "FAIL: extra-var ssh_port did not override the vars_files-loaded default"; tail -30 /tmp/wi-defaults-override.log; rc=1
+fi
+
+echo "--- Important 2: docker ps failing (rc != 0) must report UNKNOWN, not FAIL, on a healthy proxy ---"
+if $PLAYBOOK -i localhost, tests/whatif/test-service-health-docker.yml -e "ansible_become=false" >/tmp/wi-docker.log 2>&1; then
+  echo "PASS: docker rc != 0 -> UNKNOWN, and a genuinely missing container still -> FAIL"
+else
+  echo "FAIL: docker-unreachable case misclassified, or the genuine-FAIL case regressed"; tail -30 /tmp/wi-docker.log; rc=1
+fi
+
 echo "--- drift normalisation ---"
 if $PLAYBOOK -i localhost, tests/whatif/test-normalise.yml >/tmp/wi-norm.log 2>&1; then
   echo "PASS: normalisation distinguishes cosmetic from functional"

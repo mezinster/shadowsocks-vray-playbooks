@@ -8,13 +8,17 @@
   set_fact:
     whatif_results: "{{ whatif_results + [{
         'group': 'PROXY',
-        'status': (_wi_missing | length == 0) | ternary('PASS', 'FAIL'),
+        'status': _wi_docker_status,
         'name': 'proxy containers running',
-        'detail': (_wi_missing | length == 0) | ternary('nginx, shadowsocks, certbot up',
-                                                        'not running: ' ~ (_wi_missing | join(', '))) }] }}"
+        'detail': _wi_docker_detail }] }}"
   vars:
     _wi_expected: ['nginx_container', 'shadowsocks_container', 'certbot_container']
     _wi_missing: "{{ _wi_expected | reject('in', _wi_docker.stdout_lines | default([])) | list }}"
+    _wi_docker_status: "{{ 'UNKNOWN' if _wi_docker.rc != 0 else ((_wi_missing | length == 0) | ternary('PASS', 'FAIL')) }}"
+    _wi_docker_detail: >-
+      {{ 'could not query docker (rc ' ~ _wi_docker.rc ~ '): ' ~ (_wi_docker.stderr | default('') | trim | truncate(120)) ~ ' -- is the connecting user in the docker group?' if _wi_docker.rc != 0 else
+         ((_wi_missing | length == 0) | ternary('nginx, shadowsocks, certbot up',
+                                                 'not running: ' ~ (_wi_missing | join(', ')))) }}
 
 # A real WebSocket upgrade through the live nginx, from the target itself.
 # Proves the tunnel end to end, not merely that a port is open.

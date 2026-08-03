@@ -34,8 +34,32 @@
     - name: Verifying guarded files were not modified by this preflight
       include_tasks: integrity_after.yml
 
-    - name: Reporting
-      include_tasks: report.yml
+  rescue:
+    # None of the tasks above use failed_when: false to swallow a genuine
+    # problem -- so anything that lands here is either a hard infrastructure
+    # failure (sudo unavailable, a missing binary that isn't already guarded
+    # with failed_when: false, an unrenderable template) partway through the
+    # checks. Losing every result gathered so far, and printing nothing, is
+    # the worst possible outcome for a tool whose only job is producing a
+    # trustworthy report -- so this records the abort as a FAIL (never
+    # silently discarded, never counted as a pass). report.yml still runs
+    # below, outside this block, with whatever was collected before the
+    # failure.
+    #
+    # report.yml itself is deliberately NOT included inside this block: its
+    # own final task is a `fail:` that intentionally ends the play non-zero
+    # whenever whatif_results contains a genuine FAIL. If that fail: task
+    # lived in here, this rescue: would catch it too -- turning every
+    # ordinary "checks ran fine, one of them legitimately failed" run into a
+    # spurious "the preflight aborted" report with a duplicated table. This
+    # rescue: must only ever fire for a real abort of the checks themselves.
+    - name: Recording that the preflight aborted before completing all checks
+      set_fact:
+        whatif_results: "{{ (whatif_results | default([])) + [{
+            'group': 'LOCKOUT',
+            'status': 'FAIL',
+            'name': 'preflight completed without aborting',
+            'detail': 'aborted during \"' ~ (ansible_failed_task.name | default('an unnamed task')) ~ '\": ' ~ (ansible_failed_result.msg | default('see task output') | truncate(200)) }] }}"
 
   always:
     - name: Removing the working directory
@@ -44,3 +68,11 @@
         state: absent
       when: _wi_tmp.path is defined
       changed_when: false
+
+# Deliberately outside the block/rescue above -- see the comment in rescue:
+# for why. Runs exactly once, whether the checks completed cleanly or the
+# rescue: above recorded an abort, and its own `fail:` (when whatif_results
+# contains a genuine FAIL) is an ordinary top-level task failure here, not
+# something any rescue: swallows or duplicates.
+- name: Reporting
+  include_tasks: report.yml
