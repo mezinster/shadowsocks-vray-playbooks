@@ -54,6 +54,25 @@
       set_fact:
         _ssh_pre_hardening_port: "{{ ansible_port | default(22) }}"
 
+    # Fix round 2, CRITICAL (re-review of Critical 2's fix): `changed` and
+    # `backup_file` describe what THIS run's template task did, not what was
+    # on disk before it ran, so neither one can safely tell the rescue delete
+    # branch "nothing existed before me." A re-run where the drop-in is
+    # already correct is changed=False/backup_file-undefined -- identical,
+    # under the old guards, to a true first run -- so a later failure (e.g. a
+    # transient ping blip, or the assembled sshd -t breaking for an unrelated
+    # reason) made rescue DELETE a working, already-correct drop-in. Adding
+    # `_sshd_drop_in.changed` would not have closed this either: a mode/owner
+    # -only fix also yields changed=True with no backup_file. The only
+    # airtight signal is whether the file existed on disk BEFORE this task
+    # ran at all, captured here independently of what template subsequently
+    # does or reports.
+    - name: Checking whether the hardening drop-in already existed before this run
+      become: yes
+      stat:
+        path: /etc/ssh/sshd_config.d/10-hardening.conf
+      register: _sshd_drop_in_stat
+
     - name: Deploying sshd hardening drop-in
       become: yes
       template:
@@ -108,22 +127,30 @@
     # mark_host_failed(), so FAILED_TASKS is never set and `rescue` below is
     # skipped entirely (verified live: rescued=0). ignore_unreachable keeps
     # the host active and turns the outcome into a registered result instead
-    # of an play-ending removal; the following task then fails the block
+    # of a play-ending removal; the following task then fails the block
     # *locally* (assert/fail are connection-free action plugins -- they do
-    # not need to reach the host to run) whenever the ping was unreachable OR
-    # failed, which is what actually reaches `rescue` (verified live:
-    # rescued=1).
+    # not need to reach the host to run), which is what actually reaches
+    # `rescue` (verified live: rescued=1).
     - name: Verifying authentication over the new port
       ping:
       register: _ping
       ignore_unreachable: yes
 
+    # Fix round 2, MINOR cleanup: dropped the `_ping is failed` half of this
+    # condition -- it was dead. ping has no ignore_errors, so an ordinary
+    # (non-unreachable) failure aborts the block and jumps to rescue right
+    # at the ping task itself; this guard task would never even run in that
+    # case. ignore_unreachable is what lets execution reach this task at
+    # all, and it only does so for the unreachable outcome (whose registered
+    # result carries "unreachable": true and no "failed" key -- confirmed
+    # live), so `is unreachable` is the only condition that can ever be true
+    # here.
     - name: Failing when authentication over the new port did not succeed
       fail:
         msg: >-
-          Verifying authentication over the new port did not succeed
-          (unreachable or failed): {{ _ping }}
-      when: (_ping is failed) or (_ping is unreachable)
+          Verifying authentication over the new port did not succeed: the
+          host was unreachable on the new port: {{ _ping }}
+      when: _ping is unreachable
 
   rescue:
     # Fix round 1, IMPORTANT 3: return to the port recorded before this run,
@@ -158,27 +185,35 @@
     # First run: no prior version existed, so there is nothing to restore and
     # the broken file must simply go.
     #
-    # Fix round 1, CRITICAL 2: added the third guard, `_sshd_drop_in is not
-    # failed`. Without it, this task also fired when the TEMPLATE task itself
-    # failed (validate rejected the rendered fragment) -- in that case the
-    # module never writes dest, so backup_file is never set even though a
-    # perfectly good drop-in from a previous run is sitting at dest. The old
-    # condition would then DELETE that working file and fall through to the
-    # reload below, which restarts sshd on distro defaults (port 22 only) --
-    # a permanent lockout for anyone who blocked 22 at the cloud firewall, as
-    # this plan itself recommends. With the guard: when the template task
-    # failed, backup_file is unset AND the result is failed, so this branch
-    # is skipped, the untouched existing file is left exactly as it was, and
-    # the reload below just reloads the config that was already active and
-    # already known-good. Traced all three cases in the fix report.
+    # Fix round 1, CRITICAL 2: added `_sshd_drop_in is not failed` so this
+    # branch wouldn't fire when the TEMPLATE task itself failed (validate
+    # rejected the rendered fragment, dest never written) -- that guard alone
+    # is kept below, it's still correct and needed (see case 2 in the fix
+    # report).
+    #
+    # Fix round 2, CRITICAL: the re-review found that guard was not enough.
+    # `_sshd_drop_in.backup_file is not defined` describes what THIS run's
+    # template task did, not what existed on disk beforehand -- a re-run
+    # where the drop-in was already correct (changed=False, no backup_file,
+    # not failed) satisfied every old guard exactly like a true first run,
+    # so a later failure deleted a working, already-hardened config and fell
+    # back to distro sshd defaults (port 22 only) -- a permanent lockout
+    # behind a firewall that blocks 22, which is this plan's own recommended
+    # setup. Replaced the backup_file check with the pre-run stat captured
+    # above: this branch now fires only when the file provably did NOT exist
+    # before this run started, regardless of what template changed, backed
+    # up, or reported. All five cases (first run+later failure, failed
+    # validate, idempotent re-run+later failure, content-replaced re-run,
+    # mode/owner-only re-run) are traced and tested in the fix report.
     - name: Removing the failed drop-in when no previous version existed
       become: yes
       file:
         path: /etc/ssh/sshd_config.d/10-hardening.conf
         state: absent
       when:
+        - _sshd_drop_in_stat is defined
+        - not _sshd_drop_in_stat.stat.exists
         - _sshd_drop_in is defined
-        - _sshd_drop_in.backup_file is not defined
         - _sshd_drop_in is not failed
 
     - name: Reloading sshd with the restored configuration
