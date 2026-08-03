@@ -22,6 +22,9 @@
     - name: Checking SSH lockout safety
       include_tasks: ssh_safety.yml
 
+    - name: Checking proxy service health
+      include_tasks: service_health.yml
+
     - name: Verifying guarded files were not modified by this preflight
       include_tasks: integrity_after.yml
 

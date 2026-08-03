@@ -1,0 +1,94 @@
+- name: Listing running containers
+  command: docker ps --format '{{ '{{' }}.Names{{ '}}' }}'
+  register: _wi_docker
+  failed_when: false
+  changed_when: false
+
+- name: Recording the container result
+  set_fact:
+    whatif_results: "{{ whatif_results + [{
+        'group': 'PROXY',
+        'status': (_wi_missing | length == 0) | ternary('PASS', 'FAIL'),
+        'name': 'proxy containers running',
+        'detail': (_wi_missing | length == 0) | ternary('nginx, shadowsocks, certbot up',
+                                                        'not running: ' ~ (_wi_missing | join(', '))) }] }}"
+  vars:
+    _wi_expected: ['nginx_container', 'shadowsocks_container', 'certbot_container']
+    _wi_missing: "{{ _wi_expected | reject('in', _wi_docker.stdout_lines | default([])) | list }}"
+
+# A real WebSocket upgrade through the live nginx, from the target itself.
+# Proves the tunnel end to end, not merely that a port is open.
+- name: Performing a WebSocket handshake through the proxy
+  shell: |
+    printf 'GET /{{ endpoint }} HTTP/1.1\r\nHost: {{ host }}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n' \
+      | timeout 15 openssl s_client -connect 127.0.0.1:443 -servername {{ host }} -quiet 2>/dev/null \
+      | head -1
+  register: _wi_ws
+  failed_when: false
+  changed_when: false
+
+- name: Recording the tunnel result
+  set_fact:
+    whatif_results: "{{ whatif_results + [{
+        'group': 'PROXY',
+        'status': _wi_ws_ok | ternary('PASS', 'FAIL'),
+        'name': 'tunnel serves traffic',
+        'detail': _wi_ws_ok | ternary('HTTP/1.1 101', 'expected 101, got: ' ~ (_wi_ws.stdout | default('') | trim | truncate(60))) }] }}"
+  vars:
+    _wi_ws_ok: "{{ '101' in (_wi_ws.stdout | default('')) }}"
+
+- name: Recording the plugin-binding result
+  set_fact:
+    whatif_results: "{{ whatif_results + [{
+        'group': 'PROXY',
+        'status': _wi_9000_ok | ternary('PASS', 'FAIL'),
+        'name': 'v2ray-plugin is loopback-only',
+        'detail': _wi_9000_ok | ternary('127.0.0.1:9000', 'port 9000 is NOT loopback-only') }] }}"
+  vars:
+    _wi_9000: "{{ _wi_ss.stdout_lines | select('search', ':9000 ') | list }}"
+    _wi_9000_ok: "{{ (_wi_9000 | length > 0) and (_wi_9000 | select('search', '127.0.0.1:9000') | list | length == _wi_9000 | length) }}"
+
+- name: Reading the certificate expiry date
+  become: yes
+  command: >-
+    openssl x509 -in /home/{{ _wi_user }}/shadowsocks_config/certs-data/certs/live/{{ host }}/fullchain.pem
+    -noout -enddate
+  register: _wi_cert
+  failed_when: false
+  changed_when: false
+
+# The date-maths approach in the task brief (Jinja's to_datetime() filter,
+# then .timestamp() to get a UTC epoch) was tried first and rejected here.
+# to_datetime() parses "Oct 15 12:00:00 2026 GMT" into a NAIVE datetime, and
+# calling .timestamp() on a naive datetime interprets it in the CONTROLLER's
+# local timezone, not UTC -- Python does not know the string said "GMT".
+# Proven on this sandbox (controller TZ=+04): the resulting epoch was 4 hours
+# off from the true UTC value for that same string (1792051200 vs the correct
+# 1792065600, verified independently with calendar.timegm). That is an
+# uncontrolled skew tied to whichever machine happens to run the preflight --
+# not acceptable for a pass/fail boundary, even though the default 14-day
+# threshold makes it unlikely to flip a result in practice. Falling back to
+# openssl's own -checkend, whose arithmetic happens entirely inside openssl
+# using the cert's real UTC time, with no controller-timezone dependency.
+- name: Checking whether the certificate has at least whatif_cert_min_days left
+  become: yes
+  command: >-
+    openssl x509 -in /home/{{ _wi_user }}/shadowsocks_config/certs-data/certs/live/{{ host }}/fullchain.pem
+    -noout -checkend {{ (whatif_cert_min_days | int) * 86400 }}
+  register: _wi_cert_checkend
+  failed_when: false
+  changed_when: false
+
+- name: Recording the certificate result
+  set_fact:
+    whatif_results: "{{ whatif_results + [{
+        'group': 'PROXY',
+        'status': _wi_cert_status,
+        'name': 'certificate healthy',
+        'detail': _wi_cert_detail }] }}"
+  vars:
+    _wi_cert_enddate: "{{ _wi_cert.stdout | default('') | trim | regex_replace('^notAfter=', '') }}"
+    _wi_cert_status: "{{ 'UNKNOWN' if _wi_cert.rc != 0 else (('PASS') if _wi_cert_checkend.rc == 0 else 'FAIL') }}"
+    _wi_cert_detail: >-
+      {{ 'could not read certificate' if _wi_cert.rc != 0 else
+         (_wi_cert_enddate ~ (' (>= ' ~ whatif_cert_min_days ~ ' days left)' if _wi_cert_checkend.rc == 0 else ' (< ' ~ whatif_cert_min_days ~ ' days left)')) }}
