@@ -1,0 +1,129 @@
+# Renders the REAL template — never a copy. A copy would drift and the report
+# would go green against a template nobody runs.
+- name: Rendering the sshd drop-in the playbook would install
+  template:
+    src: ../../setup/templates/10-hardening.conf.j2
+    dest: "{{ _wi_tmp.path }}/10-hardening.conf"
+    mode: '0644'
+  changed_when: false
+
+- name: Reading the rendered drop-in
+  slurp:
+    src: "{{ _wi_tmp.path }}/10-hardening.conf"
+  register: _wi_sshd_raw
+
+- name: Decoding the rendered drop-in
+  set_fact:
+    _wi_sshd: "{{ _wi_sshd_raw.content | b64decode }}"
+
+- name: Validating the rendered drop-in with sshd itself
+  become: yes
+  command: "/usr/sbin/sshd -t -f {{ _wi_tmp.path }}/10-hardening.conf"
+  register: _wi_sshd_t
+  failed_when: false
+  changed_when: false
+
+- name: Recording the config-validity result
+  set_fact:
+    whatif_results: "{{ whatif_results + [{
+        'group': 'LOCKOUT',
+        'status': (_wi_sshd_t.rc == 0) | ternary('PASS', 'FAIL'),
+        'name': 'rendered sshd config valid',
+        'detail': (_wi_sshd_t.rc == 0) | ternary('sshd -t exit 0',
+                   'sshd -t exit ' ~ _wi_sshd_t.rc ~ ': ' ~ (_wi_sshd_t.stderr | default('') | truncate(120))) }] }}"
+
+- name: Extracting AllowUsers from the rendered config
+  set_fact:
+    _wi_allowusers: >-
+      {{ _wi_sshd
+         | regex_findall('(?m)^AllowUsers[ \t]+(.*)$')
+         | map('trim') | join(' ') | split(' ')
+         | reject('equalto', '') | list }}
+
+- name: Recording the AllowUsers result
+  set_fact:
+    whatif_results: "{{ whatif_results + [{
+        'group': 'LOCKOUT',
+        'status': _wi_allow_ok | ternary('PASS', 'FAIL'),
+        'name': 'connecting user survives AllowUsers',
+        'detail': _wi_allow_ok | ternary(
+            (_wi_allowusers | length == 0) | ternary('no AllowUsers directive', 'AllowUsers ' ~ (_wi_allowusers | join(' '))),
+            'AllowUsers ' ~ (_wi_allowusers | join(' ')) ~ ' excludes connected user ' ~ _wi_user) }] }}"
+  vars:
+    _wi_allow_ok: "{{ (_wi_allowusers | length == 0) or (_wi_user in _wi_allowusers) }}"
+
+- name: Checking authorized_keys
+  become: yes
+  stat:
+    path: "{{ _wi_authorized_keys }}"
+  register: _wi_ak
+
+- name: Counting authorized keys
+  become: yes
+  command: "grep -cvE '^\\s*(#|$)' {{ _wi_authorized_keys }}"
+  register: _wi_ak_count
+  failed_when: false
+  changed_when: false
+  when: _wi_ak.stat.exists
+
+- name: Recording the authorized_keys result
+  set_fact:
+    whatif_results: "{{ whatif_results + [{
+        'group': 'LOCKOUT',
+        'status': _wi_ak_ok | ternary('PASS', 'FAIL'),
+        'name': 'authorized_keys present and non-empty',
+        'detail': _wi_ak_ok | ternary((_wi_ak_count.stdout | default('0') | trim) ~ ' key(s)',
+                                      'missing or empty: ' ~ _wi_authorized_keys) }] }}"
+  vars:
+    _wi_ak_ok: "{{ _wi_ak.stat.exists and ((_wi_ak_count.stdout | default('0') | trim | int) > 0) }}"
+
+- name: Listing listening TCP ports
+  become: yes
+  command: ss -tlpnH
+  register: _wi_ss
+  changed_when: false
+
+- name: Recording the target-port result
+  set_fact:
+    whatif_results: "{{ whatif_results + [{
+        'group': 'LOCKOUT',
+        'status': _wi_port_ok | ternary('PASS', 'FAIL'),
+        'name': 'target ssh port is free or already sshd',
+        'detail': _wi_port_ok | ternary('port ' ~ ssh_port ~ ' free or held by sshd',
+                                        'port ' ~ ssh_port ~ ' held by another process') }] }}"
+  vars:
+    _wi_port_lines: "{{ _wi_ss.stdout_lines | select('search', ':' ~ ssh_port ~ ' ') | list }}"
+    _wi_port_ok: "{{ (_wi_port_lines | length == 0) or (_wi_port_lines | select('search', 'sshd') | list | length == _wi_port_lines | length) }}"
+
+- name: Recording the break-glass result
+  set_fact:
+    whatif_results: "{{ whatif_results + [{
+        'group': 'LOCKOUT',
+        'status': _wi_bg_ok | ternary('PASS', 'FAIL'),
+        'name': 'port 22 remains bound',
+        'detail': _wi_bg_ok | ternary('break-glass preserved', 'ssh_keep_port_22 is true but no Port 22 in rendered config') }] }}"
+  vars:
+    _wi_bg_ok: "{{ (not (ssh_keep_port_22 | bool)) or ((ssh_port | int) == 22) or ('Port 22' in _wi_sshd) }}"
+
+- name: Recording the key-algorithm result
+  set_fact:
+    whatif_results: "{{ whatif_results + [{
+        'group': 'LOCKOUT',
+        'status': _wi_alg_ok | ternary('PASS', 'FAIL'),
+        'name': 'key algorithms not narrowed',
+        'detail': _wi_alg_ok | ternary('no PubkeyAcceptedAlgorithms directive',
+                                       'PubkeyAcceptedAlgorithms present — may reject your key type') }] }}"
+  vars:
+    _wi_alg_ok: "{{ 'PubkeyAcceptedAlgorithms' not in _wi_sshd }}"
+
+# The cloud firewall cannot be checked: there is no AWS CLI locally or on the
+# host, and AmazonLightsailInstanceRole cannot call the Lightsail API. Reporting
+# UNKNOWN rather than PASS is deliberate — silently passing something
+# unverifiable is how a preflight becomes a liability.
+- name: Recording the cloud-firewall result as unverifiable
+  set_fact:
+    whatif_results: "{{ whatif_results + [{
+        'group': 'LOCKOUT',
+        'status': 'UNKNOWN',
+        'name': 'cloud firewall allows ssh_port',
+        'detail': 'CANNOT VERIFY — open port ' ~ ssh_port ~ ' in your provider console manually' }] }}"

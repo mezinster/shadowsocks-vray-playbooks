@@ -19,6 +19,9 @@
     - name: Snapshotting guarded files before any check runs
       include_tasks: integrity_before.yml
 
+    - name: Checking SSH lockout safety
+      include_tasks: ssh_safety.yml
+
     - name: Verifying guarded files were not modified by this preflight
       include_tasks: integrity_after.yml
 
