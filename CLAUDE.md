@@ -180,6 +180,23 @@ When `ssh_port` differs from 22 and `ssh_keep_port_22` is true, sshd binds
 **both**. Blocking 22 is delegated to the cloud firewall so that provider web
 consoles — which typically reach only port 22 — remain a break-glass path.
 
+### Why `--check` alone is not enough
+
+In ansible-core 2.11 the `command` module returns `skipped: true` **together
+with** `rc: 0` and `stdout: ""` in check mode. So a bare `--check` run reports
+"swap would be created" on a host that already has swap, and reports the
+assembled `sshd -t` validation passing when it never executed.
+
+`roles/setup` therefore carries three check-mode-specific guards (`check_mode: no`
+on the read-only swap probe; `when: not ansible_check_mode` on the assembled
+validation and on the reconnect), and `roles/whatif` exists to answer the
+questions a diff cannot: will this lock me out, and is the proxy still serving.
+
+`roles/whatif` renders the **real** templates from `roles/setup` and
+`roles/server` via relative sibling paths. Never copy a template into
+`roles/whatif` — a copy drifts, and a drifted preflight reports green against a
+template nobody runs.
+
 Three pre-flight `assert` tasks run before any change is made: the
 `ssh_keep_port_22` / `ssh_accept_lockout_risk` guard, a check that the current
 connection is not `ansible_user=root` (`harden_ssh` sets `PermitRootLogin no`),

@@ -187,6 +187,48 @@ only the intended key is offered, and consider extending fail2ban's
 `ignoreip` (in `jail.local.j2` / `fail2ban_*` variables) with a trusted
 address you connect from. Recover with the same `unbanip` command above.
 
+### Preflight — before you harden a real host
+
+    make whatif          # read-only checks, exits non-zero on any problem
+    make whatif_deep     # also starts a shadow sshd and authenticates for real
+    make whatif_preview  # the real setup.yml in --check --diff mode, shows a diff — not the preflight report
+
+`make whatif` modifies nothing and proves it: it checksums every file the
+hardening playbook can write (`whatif_guarded_paths` in
+`deploy/roles/whatif/defaults/main.yml`, plus your `authorized_keys`) before
+and after its own run. The INTEGRITY result is `PASS` only if every checksum
+is unchanged, `FAIL` if any file changed, and `UNKNOWN` if a guarded file
+exists but could not be read (a permissions problem, say) — that file was
+never actually compared, so `UNKNOWN` is never counted as a pass.
+
+`make whatif_deep` additionally starts a second sshd on loopback (port
+61022) and authenticates against it with a throwaway keypair, to prove the
+rendered config really admits you. It tests the **assembled** config — the
+candidate `10-hardening.conf` drop-in concatenated with the real
+`/etc/ssh/sshd_config` — not the drop-in alone. The drop-in by itself is
+missing directives that live only in the main config (`UsePAM yes` on
+Debian/Ubuntu); without PAM, sshd does its own account check and refuses a
+key-only account with a locked password, which is the correct state for a
+hardened account. Testing the fragment alone therefore reports FAIL on a
+host that is already correctly hardened.
+
+`make whatif_preview` is a different command with different output: it runs
+the real `setup.yml` with `--check --diff` and shows Ansible's own diff of
+what would change. It does not produce the PASS/FAIL/UNKNOWN report above.
+
+It reports `UNKNOWN` for the cloud firewall. That is **not** a pass — there
+is no way to query your provider's firewall from here, so open the new SSH
+port in your provider console and verify it yourself.
+
+The DRIFT checks compare the real templates against what is actually
+installed on the target. A malformed, empty, or unreadable live file
+degrades that check to `UNKNOWN` rather than crashing the preflight, so the
+rest of the report — INTEGRITY included — is still produced.
+
+**A green preflight is not a substitute for testing on a throwaway
+instance.** It cannot exercise `fallocate`/`mkswap`, `apt install fail2ban`,
+or the hardening role's rescue rollback under a real failure.
+
 # Deploy and tags <a id="deploy"></a>
 
 ## Server deploy
