@@ -28,3 +28,19 @@
 - name: Wait for the certificate to be generated
   ansible.builtin.pause:
     seconds: 30
+
+# certbot_container renews on its own schedule but cannot reach Docker, so the
+# host has to make nginx and shadowsocks load a renewed certificate. Daily is
+# cheap: the script does nothing unless the served certificate is stale.
+- name: Installing the post-renewal reload script
+  template:
+    src: "cert-reload.sh.j2"
+    dest: "~/shadowsocks_config/cert-reload.sh"
+    mode: '0755'
+
+- name: Scheduling the post-renewal reload check
+  ansible.builtin.cron:
+    name: "reload nginx/shadowsocks after certificate renewal"
+    minute: "17"
+    hour: "4"
+    job: "$HOME/shadowsocks_config/cert-reload.sh"

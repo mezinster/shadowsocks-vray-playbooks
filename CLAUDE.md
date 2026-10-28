@@ -159,6 +159,7 @@ Jinja2 templates (`.j2` files) in `roles/server/templates/` generate configs dyn
 - `shadowsocks-config.j2`: Shadowsocks server configuration
 - `env.j2`: Environment variables for Docker Compose
 - `cron-task.j2`: Certificate renewal cron job
+- `cert-reload.sh.j2`: Host-side daily check that reloads nginx / restarts shadowsocks after a renewal
 
 Templates use variables from `variables.yml` to customize for each deployment.
 
@@ -238,6 +239,12 @@ live. Validate on a throwaway instance before pointing this at production.
 
 ### SSL Certificate Management
 - Certificates are auto-renewed via cron task deployed with the server
+- Renewal alone is not enough: nginx and shadowsocks read the certificate only at
+  startup, and `certbot_container` has no Docker access to restart them. A host
+  cron job (`~/shadowsocks_config/cert-reload.sh`, daily 04:17) compares the
+  certificate on disk with what ports 443 and 9000 serve, and reloads only a
+  stale service. Without it, the old certificate is served until it expires
+  (this happened in Oct 2026). Activity is logged to syslog with tag `cert-reload`.
 - Manual regeneration needed if domain changes (use `--tags keys`)
 - Initial certificate generation happens during first server deployment
 
