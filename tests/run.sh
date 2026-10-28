@@ -14,7 +14,10 @@ for set in defaults hardened; do
   exp="tests/render/expected/$set"
   rm -rf "$out"
 
+  # Pin the venv interpreter: interpreter discovery picks the system python3,
+  # which ansible-core 2.11 modules cannot run on (3.12: no six.moves)
   if ! $PLAYBOOK -i localhost, tests/render/render.yml \
+       -e "ansible_python_interpreter=$PWD/venv/bin/python" \
        -e "varset=vars-$set.yml" -e "outdir=$out" >/dev/null; then
     echo "FAIL: $set (render error)"
     rc=1
